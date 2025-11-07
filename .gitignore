@@ -18,3 +18,5 @@ logs
 pacjkage-lock.json
 .vscode 
 
+# Temporary ignore
+test
