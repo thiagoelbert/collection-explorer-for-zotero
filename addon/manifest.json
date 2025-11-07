@@ -1,0 +1,19 @@
+{
+  "manifest_version": 2,
+  "name": "Zotero File Explorer",
+  "version": "0.1.0",
+  "description": "Show subcollections as folder-like rows at the top of the items list, for Explorer-style navigation.",
+  "homepage_url": "https://github.com/yourname/zotero-file-explorer",
+  "author": "thiagoelbert",
+  "icons": {
+    "48": "content/icons/favicon@0.5x.png",
+    "96": "content/icons/favicon.png"
+  },
+  "applications": {
+    "zotero": {
+      "id": "zotero-file-explorer@thiago",
+      "strict_min_version": "7.0.0",
+      "strict_max_version": "7.*"
+    }
+  }
+}
