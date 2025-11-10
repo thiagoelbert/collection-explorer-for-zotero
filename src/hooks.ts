@@ -54,9 +54,14 @@ class Hooks {
 
 // ========== STATE / GLOBALS ==========
 
+const FOLDER_ROW_SELECTED_BG = "#4072e5";
+const FOLDER_ROW_SELECTED_COLOR = "#fff";
+const FOLDER_ROW_DEFAULT_COLOR = "#222";
+
 let folderRows: HTMLElement[] = [];
 let currentGridTemplate = "auto";
 let selectedFolderRow: HTMLElement | null = null;
+let itemsBodyCleanup: (() => void) | null = null;
 let lastRenderedCollectionID: number | null = null;
 let checkInterval: any = null;
 let collectionSelectCleanup: (() => void) | null = null;
@@ -332,6 +337,7 @@ function renderFolderRows(subcollections: any[]) {
 
   applyGridTemplateFromHeader(headerCells);
   applyRowStriping();
+  attachItemsBodyListeners(body);
 
   // Keep columns in sync
   attachHeaderObservers(headerRow, () => {
@@ -360,6 +366,7 @@ function buildFolderRow(subCol: any): HTMLElement {
   `;
   row.style.gridTemplateColumns = currentGridTemplate || "auto";
   row.dataset.stripeColor = "";
+  row.style.color = FOLDER_ROW_DEFAULT_COLOR;
 
   row.onmouseenter = () => {
     if (row !== selectedFolderRow) {
@@ -409,7 +416,7 @@ function buildFolderRow(subCol: any): HTMLElement {
     const cell = doc.createElement("div");
     cell.setAttribute("role", "gridcell");
     cell.style.cssText =
-      "display:flex;align-items:center;gap:6px;padding:2px 4px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:#222;";
+      "display:flex;align-items:center;gap:6px;padding:2px 4px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:inherit;";
 
     if (i === 0) {
       const icon = doc.createElement("span");
@@ -480,6 +487,39 @@ function updateFolderRowGridTemplate(template: string) {
   });
 }
 
+function attachItemsBodyListeners(body: HTMLElement) {
+  detachItemsBodyListeners();
+  const handleFocus = (event: Event) => {
+    const target = event.target as HTMLElement | null;
+    if (!target) return;
+    if (target.closest(".thiago-folder-row")) return;
+    if (selectedFolderRow) setSelectedFolderRow(null);
+  };
+  const handleMouseDown = (event: Event) => {
+    const target = event.target as HTMLElement | null;
+    if (!target) return;
+    if (target.closest(".thiago-folder-row")) return;
+    if (selectedFolderRow) setSelectedFolderRow(null);
+  };
+
+  body.addEventListener("focusin", handleFocus, true);
+  body.addEventListener("mousedown", handleMouseDown, true);
+  itemsBodyCleanup = () => {
+    body.removeEventListener("focusin", handleFocus, true);
+    body.removeEventListener("mousedown", handleMouseDown, true);
+    itemsBodyCleanup = null;
+  };
+}
+
+function detachItemsBodyListeners() {
+  if (itemsBodyCleanup) {
+    try {
+      itemsBodyCleanup();
+    } catch { }
+    itemsBodyCleanup = null;
+  }
+}
+
 function applyRowStriping() {
   folderRows.forEach((row, index) => {
     const color = index % 2 === 0 ? "#fff" : "whitesmoke";
@@ -496,13 +536,39 @@ function setSelectedFolderRow(row: HTMLElement | null) {
     const previousColor = selectedFolderRow.dataset.stripeColor || "";
     selectedFolderRow.style.background = previousColor;
     selectedFolderRow.classList.remove("thiago-folder-row--selected");
+    selectedFolderRow.style.color = FOLDER_ROW_DEFAULT_COLOR;
   }
 
   selectedFolderRow = row;
   if (!row) return;
 
   row.classList.add("thiago-folder-row--selected");
-  row.style.background = "rgba(79,124,207,0.3)";
+  row.style.background = FOLDER_ROW_SELECTED_BG;
+  row.style.color = FOLDER_ROW_SELECTED_COLOR;
+  clearNativeItemSelection();
+}
+
+function clearNativeItemSelection() {
+  try {
+    const pane = getPane();
+    const itemsView = pane?.itemsView;
+    if (!itemsView) return;
+
+    const selection = itemsView.selection;
+    if (selection?.clearSelection) {
+      selection.clearSelection();
+    } else if (selection?.clear) {
+      selection.clear();
+    }
+
+    const treeSelection =
+      itemsView.tree?.selection ||
+      itemsView.tree?.view?.selection ||
+      itemsView._treebox?.selection;
+    if (treeSelection?.clearSelection) {
+      treeSelection.clearSelection();
+    }
+  } catch { }
 }
 
 function attachHeaderObservers(headerRow: HTMLElement | null, onChange: () => void) {
@@ -590,6 +656,7 @@ function removeFolderRows() {
   });
   folderRows = [];
   selectedFolderRow = null;
+  detachItemsBodyListeners();
 }
 
 // ========== NAVIGATION ==========
