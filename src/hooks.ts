@@ -67,6 +67,8 @@ let currentGridTemplate = "auto";
 let selectedFolderRow: HTMLElement | null = null;
 let itemsBodyCleanup: (() => void) | null = null;
 let itemsPaneHasFocus = false;
+let currentItemsBody: HTMLElement | null = null;
+let itemsBodyObserver: MutationObserver | null = null;
 let hoveredNativeRow: HTMLElement | null = null;
 let lastRenderedCollectionID: number | null = null;
 let checkInterval: any = null;
@@ -354,6 +356,7 @@ function renderFolderRows(subcollections: any[]) {
     return;
   }
   body.setAttribute("data-thiago-items-body", "true");
+  currentItemsBody = body;
 
   if (!subcollections || subcollections.length === 0) return;
 
@@ -373,12 +376,16 @@ function renderFolderRows(subcollections: any[]) {
   applyGridTemplateFromHeader(headerCells);
   applyRowStriping();
   attachItemsBodyListeners(body);
+  applyNativeRowStriping(body, folderRows.length);
 
   // Keep columns in sync
   attachHeaderObservers(headerRow, () => {
     const freshHeaderCells = headerRow ? getHeaderCellsFrom(headerRow) : [];
     applyGridTemplateFromHeader(freshHeaderCells);
     applyRowStriping();
+    if (currentItemsBody) {
+      applyNativeRowStriping(currentItemsBody, folderRows.length);
+    }
   });
 }
 
@@ -527,36 +534,27 @@ function attachItemsBodyListeners(body: HTMLElement) {
     }
     if (selectedFolderRow) setSelectedFolderRow(null);
   };
-  const handleMouseOver = (event: MouseEvent) => {
-    const target = event.target as HTMLElement | null;
-    if (!target) return;
-    const row = target.closest('[role="row"]') as HTMLElement | null;
-    if (!row || row.classList.contains("thiago-folder-row")) return;
-    const related = event.relatedTarget as HTMLElement | null;
-    if (related && row.contains(related)) return;
-    setNativeHoverRow(row);
-  };
-  const handleMouseOut = (event: MouseEvent) => {
-    const target = event.target as HTMLElement | null;
-    if (!target) return;
-    const row = target.closest('[role="row"]') as HTMLElement | null;
-    if (!row || row.classList.contains("thiago-folder-row")) return;
-    const related = event.relatedTarget as HTMLElement | null;
-    if (related && row.contains(related)) return;
-    clearNativeHoverRow(row);
-  };
-
   body.addEventListener("focusin", handleFocusIn, true);
   body.addEventListener("focusout", handleFocusOut, true);
   body.addEventListener("mousedown", handleMouseDown, true);
-  body.addEventListener("mouseover", handleMouseOver, true);
-  body.addEventListener("mouseout", handleMouseOut, true);
+  itemsBodyObserver = new MutationObserver(() => {
+    if (!currentItemsBody) return;
+    applyNativeRowStriping(currentItemsBody, folderRows.length);
+  });
+  itemsBodyObserver.observe(body, {
+    childList: true,
+    subtree: false,
+  });
   itemsBodyCleanup = () => {
     body.removeEventListener("focusin", handleFocusIn, true);
     body.removeEventListener("focusout", handleFocusOut, true);
     body.removeEventListener("mousedown", handleMouseDown, true);
-    body.removeEventListener("mouseover", handleMouseOver, true);
-    body.removeEventListener("mouseout", handleMouseOut, true);
+    if (itemsBodyObserver) {
+      try {
+        itemsBodyObserver.disconnect();
+      } catch { }
+      itemsBodyObserver = null;
+    }
     itemsBodyCleanup = null;
   };
 }
@@ -568,7 +566,12 @@ function detachItemsBodyListeners() {
     } catch { }
     itemsBodyCleanup = null;
   }
-  clearNativeHoverRow();
+  if (itemsBodyObserver) {
+    try {
+      itemsBodyObserver.disconnect();
+    } catch { }
+    itemsBodyObserver = null;
+  }
 }
 
 function applyRowStriping() {
@@ -621,31 +624,54 @@ function applyRowBackground(row: HTMLElement) {
   }
   row.style.background = row.dataset.stripeColor || "";
   row.style.color = FOLDER_ROW_DEFAULT_COLOR;
+  const color = (row.dataset.stripeColor || "").toLowerCase();
+  row.style.borderRadius = color === "whitesmoke" ? "6px" : "4px";
 }
 
-function setNativeHoverRow(row: HTMLElement) {
-  if (hoveredNativeRow === row) return;
-  if (hoveredNativeRow) {
-    clearNativeHoverRow();
-  }
-  if (
-    row.getAttribute("aria-selected") === "true" ||
-    row.classList.contains("selected")
-  ) {
-    return;
-  }
-  row.classList.add("thiago-native-hover");
-  row.style.cursor = "default";
-  hoveredNativeRow = row;
+function resetNativeRowStriping(body: HTMLElement) {
+  const nativeRows = Array.from(
+    body.querySelectorAll('[role="row"].thiago-native-striped')
+  ) as HTMLElement[];
+  nativeRows.forEach((row) => {
+    if (row.dataset.thiagoOrigBg !== undefined) {
+      row.style.background = row.dataset.thiagoOrigBg || "";
+      delete row.dataset.thiagoOrigBg;
+    }
+    if (row.dataset.thiagoOrigRadius !== undefined) {
+      row.style.borderRadius = row.dataset.thiagoOrigRadius || "";
+      delete row.dataset.thiagoOrigRadius;
+    }
+    row.classList.remove("thiago-native-striped");
+  });
 }
 
-function clearNativeHoverRow(row?: HTMLElement) {
-  const target = row || hoveredNativeRow;
-  if (!target) return;
-  target.classList.remove("thiago-native-hover");
-  if (!row || row === hoveredNativeRow) {
-    hoveredNativeRow = null;
-  }
+function applyNativeRowStriping(body: HTMLElement, offset: number) {
+  resetNativeRowStriping(body);
+  const nativeRows = Array.from(
+    body.querySelectorAll('[role="row"]:not(.thiago-folder-row)')
+  ) as HTMLElement[];
+  nativeRows.forEach((row, index) => {
+    row.classList.add("thiago-native-striped");
+    if (row.dataset.thiagoOrigBg === undefined) {
+      row.dataset.thiagoOrigBg = row.style.background || "";
+    }
+    if (row.dataset.thiagoOrigRadius === undefined) {
+      row.dataset.thiagoOrigRadius = row.style.borderRadius || "";
+    }
+
+    if (
+      row.getAttribute("aria-selected") === "true" ||
+      row.classList.contains("selected")
+    ) {
+      row.style.background = row.dataset.thiagoOrigBg || "";
+      row.style.borderRadius = row.dataset.thiagoOrigRadius || "";
+      return;
+    }
+
+    const color = (offset + index) % 2 === 0 ? "#fff" : "whitesmoke";
+    row.style.background = color;
+    row.style.borderRadius = color === "whitesmoke" ? "6px" : "4px";
+  });
 }
 
 function clearNativeItemSelection() {
@@ -757,6 +783,11 @@ function removeFolderRows() {
   folderRows = [];
   selectedFolderRow = null;
   detachItemsBodyListeners();
+  if (currentItemsBody) {
+    resetNativeRowStriping(currentItemsBody);
+    currentItemsBody.removeAttribute("data-thiago-items-body");
+    currentItemsBody = null;
+  }
 }
 
 // ========== NAVIGATION ==========
