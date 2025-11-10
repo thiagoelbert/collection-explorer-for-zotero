@@ -54,7 +54,9 @@ class Hooks {
 
 // ========== STATE / GLOBALS ==========
 
-let folderRowsContainer: HTMLElement | null = null;
+let folderRows: HTMLElement[] = [];
+let currentGridTemplate = "auto";
+let selectedFolderRow: HTMLElement | null = null;
 let lastRenderedCollectionID: number | null = null;
 let checkInterval: any = null;
 let collectionSelectCleanup: (() => void) | null = null;
@@ -315,31 +317,27 @@ function renderFolderRows(subcollections: any[]) {
 
   if (!subcollections || subcollections.length === 0) return;
 
-  // Build container
-  const container = doc.createElement("div");
-  container.id = "subcollection-folder-rows";
-  container.setAttribute("role", "rowgroup");
-  container.style.cssText = `
-    --thiago-grid: auto;
-    border-bottom: 1px solid rgba(0,0,0,.06);
-  `;
-
-  body.prepend(container);
-  folderRowsContainer = container;
-
-  // Grid alignment with header widths
-  applyGridTemplateFromHeader(headerCells);
-
-  // Build rows
+  const fragment = doc.createDocumentFragment();
+  const createdRows: HTMLElement[] = [];
   for (const sub of subcollections) {
     const row = buildFolderRow(sub);
-    container.appendChild(row);
+    createdRows.push(row);
+    fragment.appendChild(row);
   }
+
+  const firstExistingRow =
+    body.querySelector<HTMLElement>('[role="row"]') || body.firstChild;
+  body.insertBefore(fragment, firstExistingRow ?? null);
+  folderRows = createdRows;
+
+  applyGridTemplateFromHeader(headerCells);
+  applyRowStriping();
 
   // Keep columns in sync
   attachHeaderObservers(headerRow, () => {
     const freshHeaderCells = headerRow ? getHeaderCellsFrom(headerRow) : [];
     applyGridTemplateFromHeader(freshHeaderCells);
+    applyRowStriping();
   });
 }
 
@@ -353,7 +351,6 @@ function buildFolderRow(subCol: any): HTMLElement {
 
   row.style.cssText = `
     display: grid;
-    grid-template-columns: var(--thiago-grid, auto);
     align-items: center;
     min-height: 28px;
     padding: 0 6px;
@@ -361,12 +358,44 @@ function buildFolderRow(subCol: any): HTMLElement {
     user-select: none;
     cursor: pointer;
   `;
+  row.style.gridTemplateColumns = currentGridTemplate || "auto";
+  row.dataset.stripeColor = "";
 
-  row.onmouseenter = () => (row.style.background = "rgba(79,124,207,0.08)");
-  row.onmouseleave = () => (row.style.background = "");
-  row.onmousedown = () => (row.style.background = "rgba(79,124,207,0.15)");
-  row.onmouseup = () => (row.style.background = "rgba(79,124,207,0.08)");
+  row.onmouseenter = () => {
+    if (row !== selectedFolderRow) {
+      row.style.background = "rgba(79,124,207,0.08)";
+    }
+  };
+  row.onmouseleave = () => {
+    if (row !== selectedFolderRow) {
+      row.style.background = row.dataset.stripeColor || "";
+    }
+  };
+  row.onmousedown = () => {
+    if (row !== selectedFolderRow) {
+      row.style.background = "rgba(79,124,207,0.15)";
+    }
+  };
+  row.onmouseup = () => {
+    if (row !== selectedFolderRow) {
+      row.style.background = "rgba(79,124,207,0.08)";
+    }
+  };
+  row.onblur = () => {
+    if (row !== selectedFolderRow) {
+      row.style.background = row.dataset.stripeColor || "";
+    }
+  };
 
+  row.onclick = (ev) => {
+    ev.preventDefault();
+    setSelectedFolderRow(row);
+  };
+  row.ondblclick = (ev) => {
+    ev.preventDefault();
+    navigateToCollection(subCol.id);
+    scheduleRerender(260);
+  };
   row.addEventListener("keydown", (ev: KeyboardEvent) => {
     if (ev.key === "Enter" || ev.key === " ") {
       ev.preventDefault();
@@ -374,10 +403,6 @@ function buildFolderRow(subCol: any): HTMLElement {
       scheduleRerender(260);
     }
   });
-  row.onclick = () => {
-    navigateToCollection(subCol.id);
-    scheduleRerender(260);
-  };
 
   const columnCount = getCurrentColumnCount();
   for (let i = 0; i < columnCount; i++) {
@@ -437,23 +462,47 @@ function getCurrentColumnCount(): number {
 }
 
 function applyGridTemplateFromHeader(headerCells: HTMLElement[]) {
-  if (!folderRowsContainer) return;
-  if (!headerCells || headerCells.length === 0) {
-    folderRowsContainer.style.setProperty("--thiago-grid", "1fr");
-    return;
-  }
-  const widths = headerCells.map((c) => {
-    const r = c.getBoundingClientRect();
-    return Math.max(40, Math.round(r.width));
-  });
-  const template = widths.map((w) => `${w}px`).join(" ");
-  folderRowsContainer.style.setProperty("--thiago-grid", template);
-
-  folderRowsContainer
-    .querySelectorAll<HTMLElement>('[role="row"]')
-    .forEach((row: HTMLElement) => {
-      row.style.gridTemplateColumns = `var(--thiago-grid, ${template})`;
+  let template = "1fr";
+  if (headerCells && headerCells.length > 0) {
+    const widths = headerCells.map((c) => {
+      const r = c.getBoundingClientRect();
+      return Math.max(40, Math.round(r.width));
     });
+    template = widths.map((w) => `${w}px`).join(" ");
+  }
+  updateFolderRowGridTemplate(template);
+}
+
+function updateFolderRowGridTemplate(template: string) {
+  currentGridTemplate = template || "auto";
+  folderRows.forEach((row) => {
+    row.style.gridTemplateColumns = currentGridTemplate;
+  });
+}
+
+function applyRowStriping() {
+  folderRows.forEach((row, index) => {
+    const color = index % 2 === 0 ? "#fff" : "whitesmoke";
+    row.dataset.stripeColor = color;
+    if (row !== selectedFolderRow) {
+      row.style.background = color;
+    }
+  });
+}
+
+function setSelectedFolderRow(row: HTMLElement | null) {
+  if (selectedFolderRow === row) return;
+  if (selectedFolderRow) {
+    const previousColor = selectedFolderRow.dataset.stripeColor || "";
+    selectedFolderRow.style.background = previousColor;
+    selectedFolderRow.classList.remove("thiago-folder-row--selected");
+  }
+
+  selectedFolderRow = row;
+  if (!row) return;
+
+  row.classList.add("thiago-folder-row--selected");
+  row.style.background = "rgba(79,124,207,0.3)";
 }
 
 function attachHeaderObservers(headerRow: HTMLElement | null, onChange: () => void) {
@@ -534,14 +583,13 @@ function findItemsBody(root: HTMLElement): HTMLElement | null {
 }
 
 function removeFolderRows() {
-  try {
-    if (folderRowsContainer) {
-      folderRowsContainer.remove();
-      folderRowsContainer = null;
-    }
-    const doc = getDocument();
-    doc.querySelectorAll("#subcollection-folder-rows").forEach((el: Element) => (el as HTMLElement).remove());
-  } catch { }
+  folderRows.forEach((row) => {
+    try {
+      row.remove();
+    } catch { }
+  });
+  folderRows = [];
+  selectedFolderRow = null;
 }
 
 // ========== NAVIGATION ==========
