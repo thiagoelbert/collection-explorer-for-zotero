@@ -120,7 +120,7 @@ function patchCollectionSelection(pane?: any) {
     ) {
       const result = originalSelect.apply(this, args);
       try {
-        maybeScheduleRerenderForCollection(90, { force: true });
+        maybeScheduleRerenderForCollection(120);
       } catch { }
       return result;
     };
@@ -217,7 +217,7 @@ function setupCollectionChangeListener() {
   if (tree) {
     const handleSelect = () => {
       try {
-        maybeScheduleRerenderForCollection(180, { force: true });
+        maybeScheduleRerenderForCollection(180);
       } catch { }
     };
     tree.addEventListener("select", handleSelect, true);
@@ -258,16 +258,12 @@ function teardownCollectionChangeListener() {
   }
 }
 
-function maybeScheduleRerenderForCollection(
-  delay: number,
-  options?: { force?: boolean }
-) {
+function maybeScheduleRerenderForCollection(delay: number) {
   const pane = getPane();
   if (!pane) return;
   const currentCollection = pane.getSelectedCollection();
   const currentID = currentCollection?.id || null;
-  const shouldForce = options?.force === true;
-  if (shouldForce || currentID !== lastRenderedCollectionID) {
+  if (currentID !== lastRenderedCollectionID) {
     ztoolkit.log(`Collection change: ${lastRenderedCollectionID} -> ${currentID}`);
     scheduleRerender(delay);
   }
