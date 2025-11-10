@@ -54,14 +54,17 @@ class Hooks {
 
 // ========== STATE / GLOBALS ==========
 
-const FOLDER_ROW_SELECTED_BG = "#4072e5";
-const FOLDER_ROW_SELECTED_COLOR = "#fff";
+const FOLDER_ROW_SELECTED_BG_ACTIVE = "#4072e5";
+const FOLDER_ROW_SELECTED_BG_INACTIVE = "#d9d9d9";
+const FOLDER_ROW_SELECTED_COLOR_ACTIVE = "#fff";
+const FOLDER_ROW_SELECTED_COLOR_INACTIVE = "#222";
 const FOLDER_ROW_DEFAULT_COLOR = "#222";
 
 let folderRows: HTMLElement[] = [];
 let currentGridTemplate = "auto";
 let selectedFolderRow: HTMLElement | null = null;
 let itemsBodyCleanup: (() => void) | null = null;
+let itemsPaneHasFocus = false;
 let lastRenderedCollectionID: number | null = null;
 let checkInterval: any = null;
 let collectionSelectCleanup: (() => void) | null = null;
@@ -363,6 +366,7 @@ function buildFolderRow(subCol: any): HTMLElement {
     font-size: 12.5px;
     user-select: none;
     cursor: pointer;
+    border-radius: 4px;
   `;
   row.style.gridTemplateColumns = currentGridTemplate || "auto";
   row.dataset.stripeColor = "";
@@ -375,7 +379,7 @@ function buildFolderRow(subCol: any): HTMLElement {
   };
   row.onmouseleave = () => {
     if (row !== selectedFolderRow) {
-      row.style.background = row.dataset.stripeColor || "";
+      applyRowBackground(row);
     }
   };
   row.onmousedown = () => {
@@ -386,11 +390,6 @@ function buildFolderRow(subCol: any): HTMLElement {
   row.onmouseup = () => {
     if (row !== selectedFolderRow) {
       row.style.background = "rgba(79,124,207,0.08)";
-    }
-  };
-  row.onblur = () => {
-    if (row !== selectedFolderRow) {
-      row.style.background = row.dataset.stripeColor || "";
     }
   };
 
@@ -489,23 +488,41 @@ function updateFolderRowGridTemplate(template: string) {
 
 function attachItemsBodyListeners(body: HTMLElement) {
   detachItemsBodyListeners();
-  const handleFocus = (event: Event) => {
+  const handleFocusIn = (event: FocusEvent) => {
     const target = event.target as HTMLElement | null;
     if (!target) return;
-    if (target.closest(".thiago-folder-row")) return;
-    if (selectedFolderRow) setSelectedFolderRow(null);
-  };
-  const handleMouseDown = (event: Event) => {
-    const target = event.target as HTMLElement | null;
-    if (!target) return;
-    if (target.closest(".thiago-folder-row")) return;
+    itemsPaneHasFocus = true;
+    if (target.closest(".thiago-folder-row")) {
+      refreshSelectedFolderRowAppearance();
+      return;
+    }
     if (selectedFolderRow) setSelectedFolderRow(null);
   };
 
-  body.addEventListener("focusin", handleFocus, true);
+  const handleFocusOut = (event: FocusEvent) => {
+    const next = event.relatedTarget as HTMLElement | null;
+    if (next && body.contains(next)) return;
+    itemsPaneHasFocus = false;
+    refreshSelectedFolderRowAppearance();
+  };
+
+  const handleMouseDown = (event: MouseEvent) => {
+    const target = event.target as HTMLElement | null;
+    if (!target) return;
+    if (target.closest(".thiago-folder-row")) {
+      itemsPaneHasFocus = true;
+      refreshSelectedFolderRowAppearance();
+      return;
+    }
+    if (selectedFolderRow) setSelectedFolderRow(null);
+  };
+
+  body.addEventListener("focusin", handleFocusIn, true);
+  body.addEventListener("focusout", handleFocusOut, true);
   body.addEventListener("mousedown", handleMouseDown, true);
   itemsBodyCleanup = () => {
-    body.removeEventListener("focusin", handleFocus, true);
+    body.removeEventListener("focusin", handleFocusIn, true);
+    body.removeEventListener("focusout", handleFocusOut, true);
     body.removeEventListener("mousedown", handleMouseDown, true);
     itemsBodyCleanup = null;
   };
@@ -524,8 +541,9 @@ function applyRowStriping() {
   folderRows.forEach((row, index) => {
     const color = index % 2 === 0 ? "#fff" : "whitesmoke";
     row.dataset.stripeColor = color;
+    row.style.borderRadius = color === "whitesmoke" ? "6px" : "4px";
     if (row !== selectedFolderRow) {
-      row.style.background = color;
+      applyRowBackground(row);
     }
   });
 }
@@ -543,9 +561,32 @@ function setSelectedFolderRow(row: HTMLElement | null) {
   if (!row) return;
 
   row.classList.add("thiago-folder-row--selected");
-  row.style.background = FOLDER_ROW_SELECTED_BG;
-  row.style.color = FOLDER_ROW_SELECTED_COLOR;
+  itemsPaneHasFocus = true;
+  try {
+    row.focus();
+  } catch { }
+  refreshSelectedFolderRowAppearance();
   clearNativeItemSelection();
+}
+
+function refreshSelectedFolderRowAppearance() {
+  if (!selectedFolderRow) return;
+  if (itemsPaneHasFocus) {
+    selectedFolderRow.style.background = FOLDER_ROW_SELECTED_BG_ACTIVE;
+    selectedFolderRow.style.color = FOLDER_ROW_SELECTED_COLOR_ACTIVE;
+  } else {
+    selectedFolderRow.style.background = FOLDER_ROW_SELECTED_BG_INACTIVE;
+    selectedFolderRow.style.color = FOLDER_ROW_SELECTED_COLOR_INACTIVE;
+  }
+}
+
+function applyRowBackground(row: HTMLElement) {
+  if (row === selectedFolderRow) {
+    refreshSelectedFolderRowAppearance();
+    return;
+  }
+  row.style.background = row.dataset.stripeColor || "";
+  row.style.color = FOLDER_ROW_DEFAULT_COLOR;
 }
 
 function clearNativeItemSelection() {
