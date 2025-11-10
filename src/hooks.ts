@@ -9,7 +9,7 @@ import { BasicTool } from "zotero-plugin-toolkit";
 
 class Hooks {
   static async onStartup() {
-    const config = __env__.config;
+    const ADDON_NAME = "Zotero File Explorer";
     ztoolkit.log("Plugin starting...");
 
     await Zotero.uiReadyPromise;
@@ -21,7 +21,7 @@ class Hooks {
       id: "zotero-plugin-hello",
       label: "Hello from MyPlugin",
       commandListener: () => {
-        new ztoolkit.ProgressWindow(config.addonName)
+        new ztoolkit.ProgressWindow(ADDON_NAME)
           .createLine({ text: "Hello from MyPlugin!", type: "success" })
           .show();
         debugCurrentState();
@@ -47,9 +47,9 @@ class Hooks {
     renderInFlight = false;
   }
 
-  static onMainWindowLoad(): void {}
-  static onMainWindowUnload(): void {}
-  static async onDialogLaunch() {}
+  static onMainWindowLoad(): void { }
+  static onMainWindowUnload(): void { }
+  static async onDialogLaunch() { }
 }
 
 // ========== STATE / GLOBALS ==========
@@ -83,7 +83,7 @@ function requestNextFrame(cb: FrameRequestCallback): number {
     if (win?.requestAnimationFrame) {
       return win.requestAnimationFrame(cb);
     }
-  } catch {}
+  } catch { }
   return setTimeout(() => cb(Date.now()), 16) as unknown as number;
 }
 
@@ -94,7 +94,7 @@ function cancelFrame(handle: number) {
       win.cancelAnimationFrame(handle);
       return;
     }
-  } catch {}
+  } catch { }
   clearTimeout(handle);
 }
 
@@ -121,17 +121,17 @@ function patchCollectionSelection(pane?: any) {
       const result = originalSelect.apply(this, args);
       try {
         maybeScheduleRerenderForCollection(90, { force: true });
-      } catch {}
+      } catch { }
       return result;
     };
     (selection as any).__thiagoPatched = true;
     collectionSelectionRestore = () => {
       try {
         selection.select = originalSelect;
-      } catch {}
+      } catch { }
       try {
         delete (selection as any).__thiagoPatched;
-      } catch {}
+      } catch { }
       collectionSelectionRestore = null;
       ztoolkit.log("Collections selection patch removed");
     };
@@ -171,7 +171,7 @@ function debugCurrentState() {
     const sub = selectedCollection
       ? Zotero.Collections.getByParent(selectedCollection.id)
       : [];
-    ztoolkit.log(`[DEBUG] selected=${selectedCollection?.name} (${selectedCollection?.id}) sub=${sub.map(s=>s.name).join(", ")}`);
+    ztoolkit.log(`[DEBUG] selected=${selectedCollection?.name} (${selectedCollection?.id}) sub=${sub.map(s => s.name).join(", ")}`);
   } catch (e) {
     ztoolkit.log("debugCurrentState error:", e);
   }
@@ -218,7 +218,7 @@ function setupCollectionChangeListener() {
     const handleSelect = () => {
       try {
         maybeScheduleRerenderForCollection(180, { force: true });
-      } catch {}
+      } catch { }
     };
     tree.addEventListener("select", handleSelect, true);
     tree.addEventListener("keyup", handleSelect, true);
@@ -235,7 +235,7 @@ function setupCollectionChangeListener() {
   checkInterval = setInterval(() => {
     try {
       maybeScheduleRerenderForCollection(200);
-    } catch {}
+    } catch { }
   }, 500);
 }
 
@@ -243,13 +243,13 @@ function teardownCollectionChangeListener() {
   if (collectionSelectCleanup) {
     try {
       collectionSelectCleanup();
-    } catch {}
+    } catch { }
     collectionSelectCleanup = null;
   }
   if (collectionSelectionRestore) {
     try {
       collectionSelectionRestore();
-    } catch {}
+    } catch { }
     collectionSelectionRestore = null;
   }
   if (checkInterval) {
@@ -371,13 +371,13 @@ function buildFolderRow(subCol: any): HTMLElement {
   row.onmousedown = () => (row.style.background = "rgba(79,124,207,0.15)");
   row.onmouseup = () => (row.style.background = "rgba(79,124,207,0.08)");
 
-  row.onkeydown = (ev: KeyboardEvent) => {
+  row.addEventListener("keydown", (ev: KeyboardEvent) => {
     if (ev.key === "Enter" || ev.key === " ") {
       ev.preventDefault();
       navigateToCollection(subCol.id);
       scheduleRerender(260);
     }
-  };
+  });
   row.onclick = () => {
     navigateToCollection(subCol.id);
     scheduleRerender(260);
@@ -407,7 +407,7 @@ function buildFolderRow(subCol: any): HTMLElement {
           countSpan.style.cssText =
             "font-weight:400;color:#666;margin-left:6px;";
         }
-      } catch {}
+      } catch { }
 
       cell.append(icon, name, countSpan);
     } else {
@@ -455,7 +455,7 @@ function applyGridTemplateFromHeader(headerCells: HTMLElement[]) {
 
   folderRowsContainer
     .querySelectorAll<HTMLElement>('[role="row"]')
-    .forEach((row) => {
+    .forEach((row: HTMLElement) => {
       row.style.gridTemplateColumns = `var(--thiago-grid, ${template})`;
     });
 }
@@ -477,11 +477,11 @@ function attachHeaderObservers(headerRow: HTMLElement | null, onChange: () => vo
 
 function detachHeaderObservers() {
   if (headerResizeObserver) {
-    try { headerResizeObserver.disconnect(); } catch {}
+    try { headerResizeObserver.disconnect(); } catch { }
     headerResizeObserver = null;
   }
   if (columnsMutationObserver) {
-    try { columnsMutationObserver.disconnect(); } catch {}
+    try { columnsMutationObserver.disconnect(); } catch { }
     columnsMutationObserver = null;
   }
 }
@@ -497,12 +497,44 @@ function findItemsBody(root: HTMLElement): HTMLElement | null {
   body = root.querySelector<HTMLElement>('[role="rowgroup"]');
   if (body) return body;
 
-  const candidates = Array.from(root.querySelectorAll<HTMLElement>("div, section"))
-    .filter((el) => {
-      const cs = getComputedStyle(el);
-      return (cs.overflowY === "auto" || cs.overflowY === "scroll") && el.querySelector('[role="row"]');
-    });
-  return candidates[0] || null;
+  const hostWin = ((): Window | null => {
+    try {
+      return Zotero.getMainWindow();
+    } catch {
+      return null;
+    }
+  })();
+
+  const docWin = ((): Window | null => {
+    try {
+      return getDocument().defaultView;
+    } catch {
+      return null;
+    }
+  })();
+
+  const nodes = Array.from(
+    root.querySelectorAll<HTMLElement>("div, section")
+  ) as HTMLElement[];
+
+  const computeStyle =
+    hostWin && typeof hostWin.getComputedStyle === "function"
+      ? hostWin.getComputedStyle.bind(hostWin)
+      : docWin && typeof docWin.getComputedStyle === "function"
+        ? docWin.getComputedStyle.bind(docWin)
+        : null;
+
+  for (const el of nodes) {
+    const cs = computeStyle ? computeStyle(el) : null;
+    if (!cs) continue;
+
+    const scrollable = cs.overflowY === "auto" || cs.overflowY === "scroll";
+    if (scrollable && el.querySelector('[role="row"]')) {
+      return el;
+    }
+  }
+
+  return null;
 }
 
 function removeFolderRows() {
@@ -512,8 +544,8 @@ function removeFolderRows() {
       folderRowsContainer = null;
     }
     const doc = getDocument();
-    doc.querySelectorAll("#subcollection-folder-rows").forEach((el) => el.remove());
-  } catch {}
+    doc.querySelectorAll("#subcollection-folder-rows").forEach((el: Element) => (el as HTMLElement).remove());
+  } catch { }
 }
 
 // ========== NAVIGATION ==========
