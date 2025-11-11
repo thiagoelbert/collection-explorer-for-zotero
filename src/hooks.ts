@@ -37,7 +37,6 @@ class Hooks {
   static onShutdown(): void {
     ztoolkit.unregisterAll();
     removeFolderRows();
-    detachHeaderObservers();
     teardownCollectionChangeListener();
     if (rerenderTimer) {
       clearTimeout(rerenderTimer);
@@ -55,23 +54,31 @@ class Hooks {
 // ========== STATE / GLOBALS ==========
 
 const FOLDER_ROW_SELECTED_BG_ACTIVE = "#4072e5";
-const FOLDER_ROW_SELECTED_BG_INACTIVE = "#d9d9d9";
 const FOLDER_ROW_SELECTED_COLOR_ACTIVE = "#fff";
-const FOLDER_ROW_SELECTED_COLOR_INACTIVE = "#222";
-const FOLDER_ROW_DEFAULT_COLOR = "#222";
 const FOLDER_ROW_HOVER_BG = "rgba(64, 114, 229, 0.08)";
-const FOLDER_ROW_ACTIVE_PRESS_BG = "rgba(64, 114, 229, 0.15)";
 
-let folderRows: HTMLElement[] = [];
-let currentGridTemplate = "auto";
-let selectedFolderRow: HTMLElement | null = null;
-let itemsBodyCleanup: (() => void) | null = null;
-let itemsPaneHasFocus = false;
+type FolderRowEntry = {
+  key: string;
+  collectionID: number;
+  name: string;
+  childCount: number;
+};
+
+type FolderRowIntegrationState = {
+  rows: FolderRowEntry[];
+  selectedIndex: number | null;
+};
+
+type VirtualizedTablePatchState = {
+  orig: Record<string, any>;
+};
+
+const folderRowState = new WeakMap<any, FolderRowIntegrationState>();
+const vtablePatchState = new WeakMap<any, VirtualizedTablePatchState>();
+
 let lastRenderedCollectionID: number | null = null;
 let checkInterval: any = null;
 let collectionSelectCleanup: (() => void) | null = null;
-let headerResizeObserver: ResizeObserver | null = null;
-let columnsMutationObserver: MutationObserver | null = null;
 let collectionSelectionRestore: (() => void) | null = null;
 let rerenderTimer: number | null = null;
 let rafHandle: number | null = null;
@@ -95,21 +102,332 @@ function ensureGlobalStyles(doc: Document) {
   style.id = "thiago-folder-row-style";
   style.textContent = `
     .thiago-folder-row {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      min-height: 28px;
+      padding: 0 6px;
+      border-radius: 4px;
+      user-select: none;
       transition: background-color 120ms ease, color 120ms ease;
     }
-    [data-thiago-items-body] [role="row"] {
-      cursor: default;
+    .thiago-folder-row .cell {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 4px;
+      color: inherit;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
-    #zotero-items-tree[data-thiago-flip="1"] .virtualized-table .row.even:not(.selected) {
-      background-color: var(--material-stripe) !important;
+    .thiago-folder-row__icon {
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      background: currentColor;
+      display: inline-block;
     }
-    #zotero-items-tree[data-thiago-flip="1"] .virtualized-table .row.odd:not(.selected) {
-      background-color: var(--material-background) !important;
+    .thiago-folder-row__label {
+      font-weight: 600;
+    }
+    .thiago-folder-row__meta {
+      font-size: 11px;
+      color: #666;
+    }
+    .thiago-folder-row--selected {
+      background: ${FOLDER_ROW_SELECTED_BG_ACTIVE};
+      color: ${FOLDER_ROW_SELECTED_COLOR_ACTIVE};
+    }
+    .thiago-folder-row:not(.thiago-folder-row--selected):hover {
+      background: ${FOLDER_ROW_HOVER_BG};
     }
   `;
   const head = doc.head || doc.querySelector("head") || doc.documentElement;
   if (!head) return;
   head.appendChild(style);
+}
+
+// ========== FOLDER ROW INTEGRATION ==========
+
+function getItemTree(): any | null {
+  const pane = getPane();
+  return pane?.itemsView || null;
+}
+
+function getFolderState(tree: any | null, create = true): FolderRowIntegrationState | null {
+  if (!tree) return null;
+  let state = folderRowState.get(tree);
+  if (!state && create) {
+    state = { rows: [], selectedIndex: null };
+    folderRowState.set(tree, state);
+  }
+  return state ?? null;
+}
+
+function getFolderRows(tree: any | null): FolderRowEntry[] {
+  return getFolderState(tree, false)?.rows ?? [];
+}
+
+function getFolderRowCount(tree: any | null): number {
+  return getFolderRows(tree).length;
+}
+
+function setFolderRowsForTree(tree: any | null, entries: FolderRowEntry[]) {
+  const state = getFolderState(tree);
+  if (!state) return;
+  state.rows = entries;
+  state.selectedIndex = null;
+}
+
+function setFolderRowSelection(tree: any | null, folderIndex: number | null) {
+  const state = getFolderState(tree, false);
+  if (!state) return;
+  if (state.selectedIndex === folderIndex) return;
+  const vt = tree?.tree;
+  const previous = state.selectedIndex;
+  state.selectedIndex = folderIndex;
+  if (vt?.invalidateRow) {
+    if (typeof previous === "number") vt.invalidateRow(previous);
+    if (typeof folderIndex === "number") vt.invalidateRow(folderIndex);
+  }
+}
+
+function translateTableIndex(tree: any | null, tableIndex: number) {
+  const rows = getFolderRows(tree);
+  if (tableIndex >= 0 && tableIndex < rows.length) {
+    return { kind: "folder" as const, folderIndex: tableIndex, entry: rows[tableIndex] };
+  }
+  return { kind: "item" as const, itemIndex: tableIndex - rows.length };
+}
+
+function translateTableIndices(tree: any | null, indices: number[]) {
+  const result = {
+    folder: [] as number[],
+    items: [] as { tableIndex: number; itemIndex: number }[],
+  };
+  indices.forEach((index) => {
+    const info = translateTableIndex(tree, index);
+    if (info.kind === "folder") {
+      result.folder.push(info.folderIndex);
+    } else {
+      result.items.push({ tableIndex: index, itemIndex: info.itemIndex });
+    }
+  });
+  return result;
+}
+
+function ensureVirtualizedTablePatched(tree: any | null) {
+  const vt = tree?.tree;
+  if (!vt?.props) return;
+
+  let patch = vtablePatchState.get(vt);
+  if (!patch) {
+    patch = { orig: {} };
+    vtablePatchState.set(vt, patch);
+  }
+
+  const getBase = (key: string) => {
+    const current = vt.props[key];
+    const base = current && current.__thiagoOrig ? current.__thiagoOrig : current;
+    if (base) {
+      patch!.orig[key] = base;
+      return base;
+    }
+    return patch!.orig[key];
+  };
+
+  const wrapFunction = (
+    key: string,
+    wrapper: (original: any, ...args: any[]) => any
+  ) => {
+    const original = getBase(key);
+    if (!original) return;
+    const wrapped = function (this: any, ...args: any[]) {
+      return wrapper.call(this, original, ...args);
+    };
+    Object.defineProperty(wrapped, "__thiagoOrig", {
+      value: original,
+      enumerable: false,
+    });
+    vt.props[key] = wrapped;
+  };
+
+  wrapFunction("getRowCount", (original: () => number) => {
+    return (original?.() ?? 0) + getFolderRowCount(tree);
+  });
+
+  wrapFunction("renderItem", (original: any, index: number, selection: any, oldDiv: HTMLDivElement | null, columns: any[]) => {
+    const info = translateTableIndex(tree, index);
+    if (info.kind === "folder") {
+      return renderFolderVirtualRow(tree, info.entry, index, selection, oldDiv, columns);
+    }
+    return original(info.itemIndex, selection, oldDiv, columns);
+  });
+
+  [
+    { key: "isSelectable", folderValue: false },
+    { key: "isContainer", folderValue: false },
+    { key: "isContainerEmpty", folderValue: true },
+    { key: "isContainerOpen", folderValue: false },
+  ].forEach(({ key, folderValue }) => {
+    wrapFunction(key, (original: any, index: number, ...rest: any[]) => {
+      const info = translateTableIndex(tree, index);
+      if (info.kind === "folder") {
+        return folderValue;
+      }
+      return original(info.itemIndex, ...rest);
+    });
+  });
+
+  wrapFunction("getParentIndex", (original: any, index: number, ...rest: any[]) => {
+    const info = translateTableIndex(tree, index);
+    if (info.kind === "folder") return -1;
+    const parent = original(info.itemIndex, ...rest);
+    if (typeof parent !== "number" || parent < 0) return parent;
+    return parent + getFolderRowCount(tree);
+  });
+
+  wrapFunction("toggleOpenState", (original: any, index: number, ...rest: any[]) => {
+    const info = translateTableIndex(tree, index);
+    if (info.kind === "folder") return;
+    return original(info.itemIndex, ...rest);
+  });
+
+  wrapFunction("getRowString", (original: any, index: number, ...rest: any[]) => {
+    const info = translateTableIndex(tree, index);
+    if (info.kind === "folder") {
+      return info.entry.name;
+    }
+    return original(info.itemIndex, ...rest);
+  });
+
+  wrapFunction("onActivate", (original: any, event: MouseEvent | KeyboardEvent, indices: number[]) => {
+    const translated = translateTableIndices(tree, indices || []);
+    translated.folder.forEach((folderIndex) => handleFolderRowActivate(tree, folderIndex));
+    if (translated.items.length) {
+      const actual = translated.items.map((entry) => entry.itemIndex);
+      original(event, actual);
+    }
+  });
+}
+
+function renderFolderVirtualRow(
+  tree: any,
+  entry: FolderRowEntry,
+  tableIndex: number,
+  _selection: any,
+  oldDiv: HTMLDivElement | null,
+  columns: any[]
+) {
+  const doc = tree?.domEl?.ownerDocument || getDocument();
+  const row = (oldDiv || doc.createElement("div")) as HTMLDivElement & {
+    __thiagoFolderBound?: boolean;
+  };
+  row.className = "row thiago-folder-row";
+  row.dataset.tableIndex = String(tableIndex);
+  row.dataset.collectionId = String(entry.collectionID);
+  row.setAttribute("role", "treeitem");
+  row.setAttribute("aria-level", "1");
+  row.tabIndex = 0;
+  row.draggable = false;
+
+  const state = getFolderState(tree, false);
+  row.classList.toggle("thiago-folder-row--selected", state?.selectedIndex === tableIndex);
+
+  row.innerHTML = "";
+  const visibleColumns = columns.filter((col: any) => !col.hidden);
+  visibleColumns.forEach((column: any) => {
+    const cell = doc.createElement("span");
+    const classNames = ["cell", column.className || "", `column-${column.dataKey}`]
+      .filter(Boolean)
+      .join(" ");
+    cell.className = classNames;
+    cell.setAttribute("role", "gridcell");
+    if (column.primary) {
+      cell.classList.add("first-column");
+      const icon = doc.createElement("span");
+      icon.className = "thiago-folder-row__icon";
+      icon.setAttribute("aria-hidden", "true");
+
+      const label = doc.createElement("span");
+      label.className = "thiago-folder-row__label";
+      label.textContent = entry.name;
+      label.title = entry.name;
+
+      cell.append(icon, label);
+
+      if (entry.childCount) {
+        const meta = doc.createElement("span");
+        meta.className = "thiago-folder-row__meta";
+        meta.textContent = `(${entry.childCount})`;
+        cell.append(meta);
+      }
+    } else {
+      cell.textContent = "";
+    }
+    row.appendChild(cell);
+  });
+
+  bindFolderRowEvents(row, tree);
+  return row;
+}
+
+function bindFolderRowEvents(row: HTMLDivElement & { __thiagoFolderBound?: boolean }, tree: any) {
+  if (row.__thiagoFolderBound) return;
+
+  const getIndex = () => Number(row.dataset.tableIndex ?? "-1");
+
+  row.addEventListener("mousedown", (event) => {
+    event.stopPropagation();
+    const idx = getIndex();
+    if (Number.isFinite(idx)) {
+      setFolderRowSelection(tree, idx);
+    }
+  });
+
+  row.addEventListener("focus", () => {
+    const idx = getIndex();
+    if (Number.isFinite(idx)) {
+      setFolderRowSelection(tree, idx);
+    }
+  });
+
+  row.addEventListener("dblclick", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const idx = getIndex();
+    if (Number.isFinite(idx)) {
+      handleFolderRowActivate(tree, idx);
+    }
+  });
+
+  row.addEventListener("keydown", (event: KeyboardEvent) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      const idx = getIndex();
+      if (Number.isFinite(idx)) {
+        handleFolderRowActivate(tree, idx);
+      }
+    }
+  });
+
+  row.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    const idx = getIndex();
+    if (Number.isFinite(idx)) {
+      setFolderRowSelection(tree, idx);
+    }
+  });
+
+  row.__thiagoFolderBound = true;
+}
+
+function handleFolderRowActivate(tree: any | null, folderIndex: number) {
+  const info = translateTableIndex(tree, folderIndex);
+  if (info.kind !== "folder") return;
+  navigateToCollection(info.entry.collectionID);
+  scheduleRerender(200);
 }
 
 function navigateUp() {
@@ -686,423 +1004,47 @@ function maybeScheduleRerenderForCollection(delay: number) {
 
 function renderFolderRowsForCurrentCollection() {
   const pane = getPane();
+  const tree = pane?.itemsView;
   if (!pane?.itemsView?.domEl) return;
 
   const selected = pane.getSelectedCollection();
   lastRenderedCollectionID = selected?.id || null;
 
-  // Tear down previous UI
-  removeFolderRows();
-  detachHeaderObservers();
+  const subcollections = selected ? Zotero.Collections.getByParent(selected.id) : [];
+  const entries = subcollections.map((sub: any) => {
+    let childCount = 0;
+    try {
+      childCount = Zotero.Collections.getByParent(sub.id)?.length || 0;
+    } catch { }
+    return {
+      key: `thiago-folder-${sub.id}`,
+      collectionID: sub.id,
+      name: sub.name || "Untitled",
+      childCount,
+    };
+  });
 
-  if (!selected) return;
+  ensureGlobalStyles(getDocument());
+  setFolderRowsForTree(tree, entries);
+  ensureVirtualizedTablePatched(tree);
+  tree?.tree?.invalidate?.();
 
   if (selected?.id) pushToHistory(selected.id);
   updateNavStrip(selected);
 
-
-  const subcollections = Zotero.Collections.getByParent(selected.id);
-  ztoolkit.log(`Render ${subcollections.length} subcollections for "${selected.name}"`);
-
-  renderFolderRows(subcollections);
-}
-
-/**
- * We inject into the scrollable body so rows behave like list entries.
- * - Find items body (rowgroup)
- * - Prepend our container
- * - Align via CSS grid to header widths
- */
-function renderFolderRows(subcollections: any[]) {
-  const pane = getPane();
-  const doc = getDocument();
-  ensureGlobalStyles(doc);
-  const root = pane.itemsView?.domEl as HTMLElement;
-  if (!root) return;
-
-  const headerRow = root.querySelector<HTMLElement>(
-    '[role="row"][data-header], [role="row"][aria-rowindex="1"], .virtualized-table-header'
+  ztoolkit.log(
+    `Render ${entries.length} subcollections for "${selected?.name || 'No Collection'}"`
   );
-  const headerCells = headerRow ? getHeaderCellsFrom(headerRow) : [];
-
-  const body = findItemsBody(root);
-  if (!body) {
-    ztoolkit.log("Items body not found; abort folder-rows render");
-    return;
-  }
-  body.setAttribute("data-thiago-items-body", "true");
-
-  if (!subcollections || subcollections.length === 0) return;
-
-  const fragment = doc.createDocumentFragment();
-  const createdRows: HTMLElement[] = [];
-  for (const sub of subcollections) {
-    const row = buildFolderRow(sub);
-    createdRows.push(row);
-    fragment.appendChild(row);
-  }
-
-  const firstExistingRow =
-    body.querySelector<HTMLElement>('[role="row"]') || body.firstChild;
-  body.insertBefore(fragment, firstExistingRow ?? null);
-  folderRows = createdRows;
-  updateZebraFlipFlag();
-
-  applyGridTemplateFromHeader(headerCells);
-  applyRowStriping();
-  attachItemsBodyListeners(body);
-
-  // Keep columns in sync
-  attachHeaderObservers(headerRow, () => {
-    const freshHeaderCells = headerRow ? getHeaderCellsFrom(headerRow) : [];
-    applyGridTemplateFromHeader(freshHeaderCells);
-    applyRowStriping();
-  });
-}
-
-/** One folder-like row aligned to columns; opens on click/Enter/Space */
-function buildFolderRow(subCol: any): HTMLElement {
-  const doc = getDocument();
-  const row = doc.createElement("div");
-  row.setAttribute("role", "row");
-  row.className = "thiago-folder-row";
-  row.tabIndex = 0;
-
-  row.style.cssText = `
-    display: grid;
-    align-items: center;
-    min-height: 28px;
-    padding: 0 6px;
-    font-size: 12.5px;
-    user-select: none;
-    cursor: default;
-    border-radius: 4px;
-  `;
-  row.style.gridTemplateColumns = currentGridTemplate || "auto";
-  row.dataset.stripeColor = "";
-  row.style.color = FOLDER_ROW_DEFAULT_COLOR;
-
-  row.onclick = (ev) => {
-    ev.preventDefault();
-    setSelectedFolderRow(row);
-  };
-  row.ondblclick = (ev) => {
-    ev.preventDefault();
-    navigateToCollection(subCol.id);
-    scheduleRerender(260);
-  };
-  row.addEventListener("keydown", (ev: KeyboardEvent) => {
-    if (ev.key === "Enter" || ev.key === " ") {
-      ev.preventDefault();
-      navigateToCollection(subCol.id);
-      scheduleRerender(260);
-    }
-  });
-
-  const columnCount = getCurrentColumnCount();
-  for (let i = 0; i < columnCount; i++) {
-    const cell = doc.createElement("div");
-    cell.setAttribute("role", "gridcell");
-    cell.style.cssText =
-      "display:flex;align-items:center;gap:6px;padding:2px 4px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:inherit;";
-
-    if (i === 0) {
-      const icon = doc.createElement("span");
-      icon.textContent = "📁";
-      icon.setAttribute("aria-hidden", "true");
-
-      const name = doc.createElement("span");
-      name.textContent = subCol.name;
-      name.style.fontWeight = "600";
-
-      const countSpan = doc.createElement("span");
-      try {
-        const children = Zotero.Collections.getByParent(subCol.id) || [];
-        if (children.length) {
-          countSpan.textContent = `(${children.length} sub)`;
-          countSpan.style.cssText =
-            "font-weight:400;color:#666;margin-left:6px;";
-        }
-      } catch {}
-
-      cell.append(icon, name, countSpan);
-    } else {
-      cell.textContent = "";
-    }
-
-    row.appendChild(cell);
-  }
-
-  return row;
-}
-
-// ========== COLUMN SYNC / OBSERVERS ==========
-
-function getHeaderCellsFrom(headerRow: HTMLElement): HTMLElement[] {
-  const candidates = headerRow.querySelectorAll<HTMLElement>(
-    '[role="columnheader"], .column-header-cell, .virtualized-table-header-cell'
-  );
-  return Array.from(candidates);
-}
-
-function getCurrentColumnCount(): number {
-  const pane = getPane();
-  const root = pane?.itemsView?.domEl as HTMLElement;
-  if (!root) return 1;
-  const headerRow = root.querySelector<HTMLElement>(
-    '[role="row"][data-header], [role="row"][aria-rowindex="1"], .virtualized-table-header'
-  );
-  const cells = headerRow ? getHeaderCellsFrom(headerRow) : [];
-  return Math.max(1, cells.length);
-}
-
-function applyGridTemplateFromHeader(headerCells: HTMLElement[]) {
-  let template = "1fr";
-  if (headerCells && headerCells.length > 0) {
-    const widths = headerCells.map((c) => {
-      const r = c.getBoundingClientRect();
-      return Math.max(40, Math.round(r.width));
-    });
-    template = widths.map((w) => `${w}px`).join(" ");
-  }
-  updateFolderRowGridTemplate(template);
-}
-
-function updateFolderRowGridTemplate(template: string) {
-  currentGridTemplate = template || "auto";
-  folderRows.forEach((row) => {
-    row.style.gridTemplateColumns = currentGridTemplate;
-  });
-}
-
-function attachItemsBodyListeners(body: HTMLElement) {
-  detachItemsBodyListeners();
-  const handleFocusIn = (event: FocusEvent) => {
-    const target = event.target as HTMLElement | null;
-    if (!target) return;
-    itemsPaneHasFocus = true;
-    if (target.closest(".thiago-folder-row")) {
-      refreshSelectedFolderRowAppearance();
-      return;
-    }
-    if (selectedFolderRow) setSelectedFolderRow(null);
-  };
-
-  const handleFocusOut = (event: FocusEvent) => {
-    const next = event.relatedTarget as HTMLElement | null;
-    if (next && body.contains(next)) return;
-    itemsPaneHasFocus = false;
-    refreshSelectedFolderRowAppearance();
-  };
-
-  const handleMouseDown = (event: MouseEvent) => {
-    const target = event.target as HTMLElement | null;
-    if (!target) return;
-    if (target.closest(".thiago-folder-row")) {
-      itemsPaneHasFocus = true;
-      refreshSelectedFolderRowAppearance();
-      return;
-    }
-    if (selectedFolderRow) setSelectedFolderRow(null);
-  };
-  body.addEventListener("focusin", handleFocusIn, true);
-  body.addEventListener("focusout", handleFocusOut, true);
-  body.addEventListener("mousedown", handleMouseDown, true);
-  itemsBodyCleanup = () => {
-    body.removeEventListener("focusin", handleFocusIn, true);
-    body.removeEventListener("focusout", handleFocusOut, true);
-    body.removeEventListener("mousedown", handleMouseDown, true);
-    itemsBodyCleanup = null;
-  };
-}
-
-function detachItemsBodyListeners() {
-  if (itemsBodyCleanup) {
-    try {
-      itemsBodyCleanup();
-    } catch { }
-    itemsBodyCleanup = null;
-  }
-}
-
-function applyRowStriping() {
-  folderRows.forEach((row, index) => {
-    const color = index % 2 === 0 ? "#fff" : "whitesmoke";
-    row.dataset.stripeColor = color;
-    row.style.borderRadius = color === "whitesmoke" ? "6px" : "4px";
-    if (row !== selectedFolderRow) {
-      applyRowBackground(row);
-    }
-  });
-}
-
-function setSelectedFolderRow(row: HTMLElement | null) {
-  if (selectedFolderRow === row) return;
-  if (selectedFolderRow) {
-    const previousColor = selectedFolderRow.dataset.stripeColor || "";
-    selectedFolderRow.style.background = previousColor;
-    selectedFolderRow.classList.remove("thiago-folder-row--selected");
-    selectedFolderRow.style.color = FOLDER_ROW_DEFAULT_COLOR;
-  }
-
-  selectedFolderRow = row;
-  if (!row) return;
-
-  row.classList.add("thiago-folder-row--selected");
-  itemsPaneHasFocus = true;
-  try {
-    row.focus();
-  } catch { }
-  refreshSelectedFolderRowAppearance();
-  clearNativeItemSelection();
-}
-
-function updateZebraFlipFlag() {
-  try {
-    const doc = getDocument();
-    const tree = doc.getElementById("zotero-items-tree");
-    if (!tree) return;
-    if (folderRows.length % 2 === 1) {
-      tree.setAttribute("data-thiago-flip", "1");
-    } else {
-      tree.removeAttribute("data-thiago-flip");
-    }
-  } catch { }
-}
-
-function refreshSelectedFolderRowAppearance() {
-  if (!selectedFolderRow) return;
-  if (itemsPaneHasFocus) {
-    selectedFolderRow.style.background = FOLDER_ROW_SELECTED_BG_ACTIVE;
-    selectedFolderRow.style.color = FOLDER_ROW_SELECTED_COLOR_ACTIVE;
-  } else {
-    selectedFolderRow.style.background = FOLDER_ROW_SELECTED_BG_INACTIVE;
-    selectedFolderRow.style.color = FOLDER_ROW_SELECTED_COLOR_INACTIVE;
-  }
-}
-
-function applyRowBackground(row: HTMLElement) {
-  if (row === selectedFolderRow) {
-    refreshSelectedFolderRowAppearance();
-    return;
-  }
-  row.style.background = row.dataset.stripeColor || "";
-  row.style.color = FOLDER_ROW_DEFAULT_COLOR;
-  const color = (row.dataset.stripeColor || "").toLowerCase();
-  row.style.borderRadius = color === "whitesmoke" ? "6px" : "4px";
-}
-
-
-function clearNativeItemSelection() {
-  try {
-    const pane = getPane();
-    const itemsView = pane?.itemsView;
-    if (!itemsView) return;
-
-    const selection = itemsView.selection;
-    if (selection?.clearSelection) {
-      selection.clearSelection();
-    } else if (selection?.clear) {
-      selection.clear();
-    }
-
-    const treeSelection =
-      itemsView.tree?.selection ||
-      itemsView.tree?.view?.selection ||
-      itemsView._treebox?.selection;
-    if (treeSelection?.clearSelection) {
-      treeSelection.clearSelection();
-    }
-  } catch { }
-}
-
-function attachHeaderObservers(headerRow: HTMLElement | null, onChange: () => void) {
-  detachHeaderObservers();
-  if (!headerRow) return;
-
-  headerResizeObserver = new ResizeObserver(() => onChange());
-  headerResizeObserver.observe(headerRow);
-
-  columnsMutationObserver = new MutationObserver(() => onChange());
-  columnsMutationObserver.observe(headerRow, {
-    subtree: true,
-    attributes: true,
-    childList: true,
-  });
-}
-
-function detachHeaderObservers() {
-  if (headerResizeObserver) {
-    try { headerResizeObserver.disconnect(); } catch { }
-    headerResizeObserver = null;
-  }
-  if (columnsMutationObserver) {
-    try { columnsMutationObserver.disconnect(); } catch { }
-    columnsMutationObserver = null;
-  }
 }
 
 // ========== BODY LOOKUP / CLEANUP ==========
 
-function findItemsBody(root: HTMLElement): HTMLElement | null {
-  let body = root.querySelector<HTMLElement>(
-    '[role="rowgroup"].body, .virtualized-table-body, [data-role="items-body"]'
-  );
-  if (body) return body;
-
-  body = root.querySelector<HTMLElement>('[role="rowgroup"]');
-  if (body) return body;
-
-  const hostWin = ((): Window | null => {
-    try {
-      return Zotero.getMainWindow();
-    } catch {
-      return null;
-    }
-  })();
-
-  const docWin = ((): Window | null => {
-    try {
-      return getDocument().defaultView;
-    } catch {
-      return null;
-    }
-  })();
-
-  const nodes = Array.from(
-    root.querySelectorAll<HTMLElement>("div, section")
-  ) as HTMLElement[];
-
-  const computeStyle =
-    hostWin && typeof hostWin.getComputedStyle === "function"
-      ? hostWin.getComputedStyle.bind(hostWin)
-      : docWin && typeof docWin.getComputedStyle === "function"
-        ? docWin.getComputedStyle.bind(docWin)
-        : null;
-
-  for (const el of nodes) {
-    const cs = computeStyle ? computeStyle(el) : null;
-    if (!cs) continue;
-
-    const scrollable = cs.overflowY === "auto" || cs.overflowY === "scroll";
-    if (scrollable && el.querySelector('[role="row"]')) {
-      return el;
-    }
-  }
-
-  return null;
-}
-
 function removeFolderRows() {
-  folderRows.forEach((row) => {
-    try {
-      row.remove();
-    } catch { }
-  });
-  folderRows = [];
-  selectedFolderRow = null;
-  detachItemsBodyListeners();
-  updateZebraFlipFlag();
+  const tree = getItemTree();
+  if (!tree) return;
+  setFolderRowsForTree(tree, []);
+  ensureVirtualizedTablePatched(tree);
+  tree?.tree?.invalidate?.();
 }
 
 // ========== NAVIGATION ==========
