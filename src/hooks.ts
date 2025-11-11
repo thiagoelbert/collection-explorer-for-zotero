@@ -335,8 +335,21 @@ function mountNavStrip(doc: Document) {
 
   strip.append(buttonsWrap, pathRow);
 
-  if (itemsToolbar?.parentElement) {
-    itemsToolbar.insertAdjacentElement("afterend", strip);
+  const itemsPaneContainer =
+    doc.getElementById("zotero-items-pane-container") ||
+    (root.closest("#zotero-items-pane-container") as HTMLElement | null);
+  const toolbarContainer =
+    doc.getElementById("zotero-toolbar-item-tree") ||
+    (itemsToolbar?.closest("#zotero-toolbar-item-tree") as HTMLElement | null);
+
+  if (
+    itemsPaneContainer &&
+    toolbarContainer &&
+    toolbarContainer.parentElement === itemsPaneContainer
+  ) {
+    toolbarContainer.insertAdjacentElement("afterend", strip);
+  } else if (itemsToolbar?.parentElement) {
+    itemsToolbar.parentElement.insertBefore(strip, itemsToolbar.nextSibling);
   } else if (windowed?.parentElement) {
     windowed.parentElement.insertBefore(strip, windowed);
   } else {
