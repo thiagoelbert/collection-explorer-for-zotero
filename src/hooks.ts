@@ -1,4 +1,4 @@
-import { BasicTool } from "zotero-plugin-toolkit";
+﻿import { BasicTool } from "zotero-plugin-toolkit";
 
 /**
  * Clean build:
@@ -111,6 +111,366 @@ function ensureGlobalStyles(doc: Document) {
   if (!head) return;
   head.appendChild(style);
 }
+
+function navigateUp() {
+  const pane = getPane();
+  const cur = pane?.getSelectedCollection();
+  if (!cur?.parentID) return;
+  navigateToCollection(cur.parentID);
+  scheduleRerender(120);
+}
+
+// Parse "Library / Parent / Child"
+function commitPath(raw: string) {
+  const target = resolveCollectionByPath(raw.trim());
+  const doc = getDocument();
+  const strip = doc.getElementById("thiago-nav-strip") as any;
+  if (target) {
+    navigateToCollection(target.id);
+    scheduleRerender(120);
+  }
+  if (strip?.__stopEditPath) strip.__stopEditPath();
+}
+
+function resolveCollectionByPath(input: string): any | null {
+  // tolerate extra spaces, allow either "Library / A / B" or just "A / B" using current library
+  const parts = input.split("/").map(s => s.trim()).filter(Boolean);
+  if (!parts.length) return null;
+
+  const pane = getPane();
+  const sel = pane?.getSelectedCollection();
+  const currentLibID = sel?.libraryID ?? Zotero.Libraries.userLibraryID;
+
+  // If first segment matches any library name, start from that library; else use current
+  let libID = currentLibID;
+  const allLibs = Zotero.Libraries.getAll();
+  const first = parts[0].toLowerCase();
+  const libHit = allLibs.find((l: any) => (l.name || "").toLowerCase() === first);
+  let idx = 0;
+  if (libHit) { libID = libHit.libraryID; idx = 1; }
+
+  // Walk collections by name (case-insensitive, first match among siblings)
+  let parentID: number | null = null;
+  let found: any = null;
+  for (; idx < parts.length; idx++) {
+    const name = parts[idx].toLowerCase();
+    const siblings = parentID == null
+      ? Zotero.Collections.getByLibrary(libID).filter((c: any) => !c.parentID)
+      : Zotero.Collections.getByParent(parentID);
+    found = siblings.find((c: any) => (c.name || "").toLowerCase() === name);
+    if (!found) return null;
+    parentID = found.id;
+  }
+  return found;
+}
+
+
+type PathSeg = { label: string; collectionID: number | null };
+
+function getPathSegments(selected: any): PathSeg[] {
+  // Library root + chain of parents down to selected
+  const segs: PathSeg[] = [];
+  if (!selected) {
+    // Nothing selected â†’ show just Library names? Keep simple:
+    return [{ label: "Library", collectionID: null }];
+  }
+  const lib = Zotero.Libraries.get(selected.libraryID);
+  const libName = (lib as any)?.name || "Library";
+  segs.push({ label: libName, collectionID: null });
+
+  // climb parents
+  const chain: any[] = [];
+  let cur = selected;
+  while (cur) { chain.unshift(cur); if (!cur.parentID) break; cur = Zotero.Collections.get(cur.parentID); }
+  chain.forEach(col => segs.push({ label: col.name, collectionID: col.id }));
+  return segs;
+}
+
+function getCurrentPathString(): string {
+  const sel = getPane()?.getSelectedCollection();
+  if (!sel) return "Library";
+  const segs = getPathSegments(sel).map(s => s.label);
+  return segs.join(" / ");
+}
+
+
+function ensureNavStripCSS(doc: Document) {
+  if (doc.getElementById("thiago-nav-strip-style")) return;
+  const s = doc.createElement("style");
+  s.id = "thiago-nav-strip-style";
+  s.textContent = `
+  /* container */
+  #thiago-nav-strip {
+    display:flex; align-items:center; gap:8px;
+    padding:6px 8px;
+    border-bottom:1px solid var(--color-border, #dadada);
+    background:var(--material-toolbar, #f9f9f9);
+    position:sticky; top:0; z-index: 1;
+  }
+  #thiago-nav-strip button {
+    border:none; background:transparent; padding:4px 6px; border-radius:6px;
+    font-size:14px; line-height:1; cursor:pointer;
+  }
+  #thiago-nav-strip button:hover { background: var(--accent-blue10, rgba(64,114,229,.1)); }
+  #thiago-nav-strip button:disabled { opacity:.35; cursor:default; }
+  #thiago-nav-path {
+    min-width: 240px; flex:1; display:flex; align-items:center; gap:6px;
+    padding:2px 6px; border-radius:6px; background: var(--material-button, #fff); border:1px solid var(--color-border, #dadada);
+    overflow:hidden;
+  }
+  .thiago-crumb {
+    display:inline-flex; align-items:center; gap:6px; white-space:nowrap; padding:2px 4px; border-radius:4px; cursor:pointer;
+  }
+  .thiago-crumb:hover { background: var(--accent-blue10, rgba(64,114,229,.1)); }
+  .thiago-crumb-sep { opacity:.6; user-select:none; }
+  #thiago-nav-input {
+    width:100%; border:none; outline:none; background:transparent; font:inherit; padding:0;
+  }
+  #thiago-nav-path.editing { outline:2px solid var(--accent-blue30, rgba(64,114,229,.3)); }
+  `;
+  const host = doc.head || doc.querySelector("head") || doc.documentElement;
+  if (host) host.appendChild(s);
+}
+
+// --- history ---
+const navHistory: number[] = [];
+let navIndex = -1;
+
+function pushToHistory(id: number | null) {
+  if (id == null) return;
+  if (navHistory.length && navHistory[navHistory.length - 1] === id) {
+    navIndex = navHistory.length - 1;
+    updateNavButtonsEnabled();
+    return;
+  }
+  if (navIndex < navHistory.length - 1) navHistory.splice(navIndex + 1);
+  navHistory.push(id);
+  navIndex = navHistory.length - 1;
+  updateNavButtonsEnabled();
+}
+
+function canGo(delta: -1 | 1) {
+  const i = navIndex + delta;
+  return i >= 0 && i < navHistory.length;
+}
+
+function navigateHistory(delta: -1 | 1) {
+  if (!canGo(delta)) return;
+  navIndex += delta;
+  const id = navHistory[navIndex];
+  navigateToCollection(id);
+  scheduleRerender(120);
+}
+
+// --- UI mount/update ---
+function mountNavStrip(doc: Document) {
+  if (doc.getElementById("thiago-nav-strip")) return;
+
+  const root = getPane()?.itemsView?.domEl as HTMLElement | null;
+  if (!root) return;
+
+  const windowed =
+    root.querySelector(".virtualized-table-list") ||
+    root.querySelector("#virtualized-table-list") ||
+    root.querySelector(".windowed-list");
+  const itemsToolbar =
+    doc.getElementById("zotero-items-toolbar") ||
+    root.querySelector<HTMLElement>("#zotero-items-toolbar");
+
+  const strip = doc.createElement("div");
+  strip.id = "thiago-nav-strip";
+  strip.style.display = "flex";
+  strip.style.alignItems = "center";
+  strip.style.gap = "8px";
+  strip.style.padding = "6px 8px";
+  strip.style.borderBottom = "1px solid var(--color-border, #dadada)";
+  strip.style.background = "var(--material-toolbar, #f9f9f9)";
+
+  const buttonsWrap = doc.createElement("div");
+  buttonsWrap.style.display = "flex";
+  buttonsWrap.style.alignItems = "center";
+  buttonsWrap.style.gap = "4px";
+
+  const backBtn = createNavButton(doc, "thiago-nav-back", "Back (Alt+Left)", "\u2190");
+  const fwdBtn = createNavButton(doc, "thiago-nav-forward", "Forward (Alt+Right)", "\u2192");
+  const upBtn = createNavButton(doc, "thiago-nav-up", "Up (Alt+Up)", "\u2191");
+  buttonsWrap.append(backBtn, fwdBtn, upBtn);
+
+  const pathBox = doc.createElement("div");
+  pathBox.id = "thiago-nav-path";
+  pathBox.style.minWidth = "240px";
+  pathBox.style.flex = "1";
+  pathBox.style.display = "flex";
+  pathBox.style.alignItems = "center";
+  pathBox.style.gap = "6px";
+  pathBox.style.padding = "2px 6px";
+  pathBox.style.borderRadius = "6px";
+  pathBox.style.background = "var(--material-button, #fff)";
+  pathBox.style.border = "1px solid var(--color-border, #dadada)";
+  pathBox.title = "Click to edit â€¢ Ctrl+L to focus";
+
+  const crumbs = doc.createElement("div");
+  crumbs.id = "thiago-nav-breadcrumbs";
+  crumbs.style.display = "flex";
+  crumbs.style.alignItems = "center";
+  crumbs.style.gap = "4px";
+  crumbs.style.flexWrap = "wrap";
+
+  const input = doc.createElement("input");
+  input.id = "thiago-nav-input";
+  input.style.display = "none";
+  input.style.flex = "1";
+  input.style.border = "none";
+  input.style.outline = "none";
+  input.style.background = "transparent";
+
+  const pathRow = doc.createElement("div");
+  pathRow.style.display = "flex";
+  pathRow.style.alignItems = "center";
+  pathRow.style.gap = "6px";
+  pathRow.style.width = "100%";
+
+  pathBox.append(crumbs, input);
+  pathRow.append(pathBox);
+
+  strip.append(buttonsWrap, pathRow);
+
+  if (itemsToolbar?.parentElement) {
+    itemsToolbar.insertAdjacentElement("afterend", strip);
+  } else if (windowed?.parentElement) {
+    windowed.parentElement.insertBefore(strip, windowed);
+  } else {
+    root.prepend(strip);
+  }
+
+  backBtn.addEventListener("click", () => navigateHistory(-1));
+  fwdBtn.addEventListener("click", () => navigateHistory(1));
+  upBtn.addEventListener("click", () => navigateUp());
+
+  pathBox.addEventListener("click", () => startEditPath());
+  input.addEventListener("keydown", (e: KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commitPath(input.value);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      stopEditPath();
+    }
+  });
+  input.addEventListener("blur", () => stopEditPath());
+
+  const keydownHandler = (ev: KeyboardEvent) => {
+    if (ev.altKey && ev.key === "ArrowLeft") {
+      ev.preventDefault();
+      navigateHistory(-1);
+    } else if (ev.altKey && ev.key === "ArrowRight") {
+      ev.preventDefault();
+      navigateHistory(1);
+    } else if (ev.altKey && ev.key === "ArrowUp") {
+      ev.preventDefault();
+      navigateUp();
+    } else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "l") {
+      ev.preventDefault();
+      startEditPath(true);
+    }
+  };
+  doc.addEventListener("keydown", keydownHandler);
+
+  function startEditPath(selectAll = false) {
+    pathBox.classList.add("editing");
+    crumbs.style.display = "none";
+    input.style.display = "";
+    input.value = getCurrentPathString();
+    setTimeout(() => {
+      input.focus();
+      if (selectAll) input.select();
+    }, 0);
+  }
+  function stopEditPath() {
+    pathBox.classList.remove("editing");
+    input.style.display = "none";
+    crumbs.style.display = "";
+  }
+
+  (strip as any).__stopEditPath = stopEditPath;
+  (strip as any).__keydownHandler = keydownHandler;
+}
+
+function createNavButton(
+  doc: Document,
+  id: string,
+  title: string,
+  label: string
+): HTMLButtonElement {
+  const btn = doc.createElement("button");
+  btn.id = id;
+  btn.type = "button";
+  btn.title = title;
+  btn.textContent = label;
+  btn.style.border = "none";
+  btn.style.background = "transparent";
+  btn.style.padding = "4px 6px";
+  btn.style.borderRadius = "6px";
+  btn.style.fontSize = "14px";
+  btn.style.lineHeight = "1";
+  btn.style.cursor = "pointer";
+  btn.addEventListener("mouseenter", () => {
+    if (btn.disabled) return;
+    btn.style.background = "var(--accent-blue10, rgba(64,114,229,.1))";
+  });
+  btn.addEventListener("mouseleave", () => {
+    btn.style.background = "transparent";
+  });
+  return btn;
+}
+
+function updateNavStrip(selected?: any) {
+  const doc = getDocument();
+  ensureNavStripCSS(doc);
+  mountNavStrip(doc);
+  const strip = doc.getElementById("thiago-nav-strip") as any;
+  if (strip?.__stopEditPath) {
+    try {
+      strip.__stopEditPath();
+    } catch {}
+  }
+
+  const crumbsBox = doc.getElementById("thiago-nav-breadcrumbs") as HTMLDivElement | null;
+  if (!crumbsBox) return;
+
+  const sel = selected ?? getPane()?.getSelectedCollection();
+  const segments = getPathSegments(sel);
+  // rebuild crumbs
+  crumbsBox.textContent = "";
+  segments.forEach((seg, i) => {
+    if (i > 0) {
+      const sep = doc.createElement("span");
+      sep.className = "thiago-crumb-sep";
+      sep.textContent = "â€º";
+      crumbsBox.appendChild(sep);
+    }
+    const c = doc.createElement("span");
+    c.className = "thiago-crumb";
+    c.textContent = seg.label;
+    c.title = seg.label;
+    c.onclick = () => { if (seg.collectionID != null) navigateToCollection(seg.collectionID); };
+    crumbsBox.appendChild(c);
+  });
+
+  updateNavButtonsEnabled();
+}
+
+function updateNavButtonsEnabled() {
+  const doc = getDocument();
+  const b = doc.getElementById("thiago-nav-back") as HTMLButtonElement | null;
+  const f = doc.getElementById("thiago-nav-forward") as HTMLButtonElement | null;
+  const u = doc.getElementById("thiago-nav-up") as HTMLButtonElement | null;
+  const sel = getPane()?.getSelectedCollection();
+  if (b) b.disabled = !canGo(-1);
+  if (f) f.disabled = !canGo(1);
+  if (u) u.disabled = !(sel && sel.parentID);
+}
+
 
 function requestNextFrame(cb: FrameRequestCallback): number {
   try {
@@ -271,6 +631,11 @@ function setupCollectionChangeListener() {
     try {
       maybeScheduleRerenderForCollection(200);
     } catch { }
+
+    try {
+      updateNavStrip();
+    } catch { }
+
   }, 500);
 }
 
@@ -318,6 +683,10 @@ function renderFolderRowsForCurrentCollection() {
   detachHeaderObservers();
 
   if (!selected) return;
+
+  if (selected?.id) pushToHistory(selected.id);
+  updateNavStrip(selected);
+
 
   const subcollections = Zotero.Collections.getByParent(selected.id);
   ztoolkit.log(`Render ${subcollections.length} subcollections for "${selected.name}"`);
@@ -441,7 +810,7 @@ function buildFolderRow(subCol: any): HTMLElement {
           countSpan.style.cssText =
             "font-weight:400;color:#666;margin-left:6px;";
         }
-      } catch { }
+      } catch {}
 
       cell.append(icon, name, countSpan);
     } else {
