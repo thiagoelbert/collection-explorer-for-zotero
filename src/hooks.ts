@@ -67,9 +67,6 @@ let currentGridTemplate = "auto";
 let selectedFolderRow: HTMLElement | null = null;
 let itemsBodyCleanup: (() => void) | null = null;
 let itemsPaneHasFocus = false;
-let currentItemsBody: HTMLElement | null = null;
-let itemsBodyObserver: MutationObserver | null = null;
-let hoveredNativeRow: HTMLElement | null = null;
 let lastRenderedCollectionID: number | null = null;
 let checkInterval: any = null;
 let collectionSelectCleanup: (() => void) | null = null;
@@ -100,21 +97,17 @@ function ensureGlobalStyles(doc: Document) {
     .thiago-folder-row {
       transition: background-color 120ms ease, color 120ms ease;
     }
-    .thiago-folder-row:not(.thiago-folder-row--selected):hover {
-      background-color: ${FOLDER_ROW_HOVER_BG};
-    }
-    .thiago-folder-row:not(.thiago-folder-row--selected):active {
-      background-color: ${FOLDER_ROW_ACTIVE_PRESS_BG};
-    }
     [data-thiago-items-body] [role="row"] {
       cursor: default;
     }
-    [data-thiago-items-body] [role="row"].thiago-native-hover {
-      background-color: ${FOLDER_ROW_HOVER_BG} !important;
-      border-radius: 4px;
+    #zotero-items-tree[data-thiago-flip="1"] .virtualized-table .row.even:not(.selected) {
+      background-color: var(--material-stripe) !important;
+    }
+    #zotero-items-tree[data-thiago-flip="1"] .virtualized-table .row.odd:not(.selected) {
+      background-color: var(--material-background) !important;
     }
   `;
-  const head = doc.head || doc.querySelector("head");
+  const head = doc.head || doc.querySelector("head") || doc.documentElement;
   if (!head) return;
   head.appendChild(style);
 }
@@ -356,7 +349,6 @@ function renderFolderRows(subcollections: any[]) {
     return;
   }
   body.setAttribute("data-thiago-items-body", "true");
-  currentItemsBody = body;
 
   if (!subcollections || subcollections.length === 0) return;
 
@@ -372,20 +364,17 @@ function renderFolderRows(subcollections: any[]) {
     body.querySelector<HTMLElement>('[role="row"]') || body.firstChild;
   body.insertBefore(fragment, firstExistingRow ?? null);
   folderRows = createdRows;
+  updateZebraFlipFlag();
 
   applyGridTemplateFromHeader(headerCells);
   applyRowStriping();
   attachItemsBodyListeners(body);
-  applyNativeRowStriping(body, folderRows.length);
 
   // Keep columns in sync
   attachHeaderObservers(headerRow, () => {
     const freshHeaderCells = headerRow ? getHeaderCellsFrom(headerRow) : [];
     applyGridTemplateFromHeader(freshHeaderCells);
     applyRowStriping();
-    if (currentItemsBody) {
-      applyNativeRowStriping(currentItemsBody, folderRows.length);
-    }
   });
 }
 
@@ -537,24 +526,10 @@ function attachItemsBodyListeners(body: HTMLElement) {
   body.addEventListener("focusin", handleFocusIn, true);
   body.addEventListener("focusout", handleFocusOut, true);
   body.addEventListener("mousedown", handleMouseDown, true);
-  itemsBodyObserver = new MutationObserver(() => {
-    if (!currentItemsBody) return;
-    applyNativeRowStriping(currentItemsBody, folderRows.length);
-  });
-  itemsBodyObserver.observe(body, {
-    childList: true,
-    subtree: false,
-  });
   itemsBodyCleanup = () => {
     body.removeEventListener("focusin", handleFocusIn, true);
     body.removeEventListener("focusout", handleFocusOut, true);
     body.removeEventListener("mousedown", handleMouseDown, true);
-    if (itemsBodyObserver) {
-      try {
-        itemsBodyObserver.disconnect();
-      } catch { }
-      itemsBodyObserver = null;
-    }
     itemsBodyCleanup = null;
   };
 }
@@ -565,12 +540,6 @@ function detachItemsBodyListeners() {
       itemsBodyCleanup();
     } catch { }
     itemsBodyCleanup = null;
-  }
-  if (itemsBodyObserver) {
-    try {
-      itemsBodyObserver.disconnect();
-    } catch { }
-    itemsBodyObserver = null;
   }
 }
 
@@ -606,6 +575,19 @@ function setSelectedFolderRow(row: HTMLElement | null) {
   clearNativeItemSelection();
 }
 
+function updateZebraFlipFlag() {
+  try {
+    const doc = getDocument();
+    const tree = doc.getElementById("zotero-items-tree");
+    if (!tree) return;
+    if (folderRows.length % 2 === 1) {
+      tree.setAttribute("data-thiago-flip", "1");
+    } else {
+      tree.removeAttribute("data-thiago-flip");
+    }
+  } catch { }
+}
+
 function refreshSelectedFolderRowAppearance() {
   if (!selectedFolderRow) return;
   if (itemsPaneHasFocus) {
@@ -628,51 +610,6 @@ function applyRowBackground(row: HTMLElement) {
   row.style.borderRadius = color === "whitesmoke" ? "6px" : "4px";
 }
 
-function resetNativeRowStriping(body: HTMLElement) {
-  const nativeRows = Array.from(
-    body.querySelectorAll('[role="row"].thiago-native-striped')
-  ) as HTMLElement[];
-  nativeRows.forEach((row) => {
-    if (row.dataset.thiagoOrigBg !== undefined) {
-      row.style.background = row.dataset.thiagoOrigBg || "";
-      delete row.dataset.thiagoOrigBg;
-    }
-    if (row.dataset.thiagoOrigRadius !== undefined) {
-      row.style.borderRadius = row.dataset.thiagoOrigRadius || "";
-      delete row.dataset.thiagoOrigRadius;
-    }
-    row.classList.remove("thiago-native-striped");
-  });
-}
-
-function applyNativeRowStriping(body: HTMLElement, offset: number) {
-  resetNativeRowStriping(body);
-  const nativeRows = Array.from(
-    body.querySelectorAll('[role="row"]:not(.thiago-folder-row)')
-  ) as HTMLElement[];
-  nativeRows.forEach((row, index) => {
-    row.classList.add("thiago-native-striped");
-    if (row.dataset.thiagoOrigBg === undefined) {
-      row.dataset.thiagoOrigBg = row.style.background || "";
-    }
-    if (row.dataset.thiagoOrigRadius === undefined) {
-      row.dataset.thiagoOrigRadius = row.style.borderRadius || "";
-    }
-
-    if (
-      row.getAttribute("aria-selected") === "true" ||
-      row.classList.contains("selected")
-    ) {
-      row.style.background = row.dataset.thiagoOrigBg || "";
-      row.style.borderRadius = row.dataset.thiagoOrigRadius || "";
-      return;
-    }
-
-    const color = (offset + index) % 2 === 0 ? "#fff" : "whitesmoke";
-    row.style.background = color;
-    row.style.borderRadius = color === "whitesmoke" ? "6px" : "4px";
-  });
-}
 
 function clearNativeItemSelection() {
   try {
@@ -783,11 +720,7 @@ function removeFolderRows() {
   folderRows = [];
   selectedFolderRow = null;
   detachItemsBodyListeners();
-  if (currentItemsBody) {
-    resetNativeRowStriping(currentItemsBody);
-    currentItemsBody.removeAttribute("data-thiago-items-body");
-    currentItemsBody = null;
-  }
+  updateZebraFlipFlag();
 }
 
 // ========== NAVIGATION ==========
