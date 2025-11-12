@@ -20,3 +20,6 @@ pacjkage-lock.json
 
 # Temporary ignore
 test
+
+#Cspell
+cspell.json
