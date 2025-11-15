@@ -697,6 +697,7 @@ function renderFolderRowsForCurrentCollection() {
   if (!pane?.itemsView?.domEl) return;
 
   const selected = pane.getSelectedCollection();
+  const previousCollectionID = lastRenderedCollectionID;
   lastRenderedCollectionID = selected?.id || null;
 
   // Tear down previous UI
@@ -710,9 +711,10 @@ function renderFolderRowsForCurrentCollection() {
 
 
   const subcollections = Zotero.Collections.getByParent(selected.id);
+  const shouldResetScroll = previousCollectionID !== lastRenderedCollectionID;
   ztoolkit.log(`Render ${subcollections.length} subcollections for "${selected.name}"`);
 
-  renderFolderRows(subcollections);
+  renderFolderRows(subcollections, { resetScroll: shouldResetScroll });
 }
 
 /**
@@ -721,7 +723,8 @@ function renderFolderRowsForCurrentCollection() {
  * - Prepend our container
  * - Align via CSS grid to header widths
  */
-function renderFolderRows(subcollections: any[]) {
+function renderFolderRows(subcollections: any[], options?: { resetScroll?: boolean }) {
+  const resetScroll = !!options?.resetScroll;
   const pane = getPane();
   const doc = getDocument();
   ensureGlobalStyles(doc);
@@ -769,6 +772,9 @@ function renderFolderRows(subcollections: any[]) {
   ensureWindowResizeListener();
   attachFolderRowsResizeObserver(body);
   scheduleExtraTopOffsetMeasure();
+  if (resetScroll) {
+    scrollBodyToTop(body);
+  }
 
   // Keep columns in sync
   attachHeaderObservers(headerRow, () => {
@@ -1008,6 +1014,20 @@ type ScrollCompensationSetupResult = {
   writeNative: (value: number) => void;
 };
 
+function scrollBodyToTop(body: HTMLElement) {
+  if (!body) return;
+  const scroller =
+    (scrollCompensationState?.scroller?.isConnected ? scrollCompensationState.scroller : null) ||
+    getScrollHostForBody(body) ||
+    body;
+  const snap = () => setScrollerActualScroll(scroller, 0);
+  snap();
+  requestNextFrame(() => {
+    snap();
+    requestNextFrame(() => snap());
+  });
+}
+
 function ensureScrollTopCompensation(body: HTMLElement) {
   if (!ENABLE_SCROLLTOP_COMPENSATION) return;
   const scroller = getScrollHostForBody(body);
@@ -1210,6 +1230,23 @@ function sanitizeScrollValue(value: any): number {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function setScrollerActualScroll(scroller: HTMLElement, actualValue: number): boolean {
+  if (!scroller) return false;
+  const numeric = Math.max(0, sanitizeScrollValue(actualValue));
+  if (scrollCompensationState?.scroller === scroller) {
+    try {
+      scrollCompensationState.writeNative(numeric);
+      return true;
+    } catch { }
+  }
+  try {
+    scroller.scrollTop = numeric;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function attachItemsBodyListeners(body: HTMLElement) {
