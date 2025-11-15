@@ -950,7 +950,8 @@ function measureExtraTopOffsetNow() {
 function getFolderRowsContainer(): HTMLElement | null {
   if (!folderRows.length) return null;
   const first = folderRows[0];
-  return first?.parentElement || null;
+  if (!first) return null;
+  return first.parentElement as HTMLElement | null;
 }
 
 function attachFolderRowsResizeObserver(container: HTMLElement | null) {
