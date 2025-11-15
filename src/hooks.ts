@@ -37,7 +37,9 @@ class Hooks {
   static onShutdown(): void {
     ztoolkit.unregisterAll();
     removeFolderRows();
+    teardownScrollTopCompensation();
     detachHeaderObservers();
+    teardownWindowResizeListener();
     teardownCollectionChangeListener();
     if (rerenderTimer) {
       clearTimeout(rerenderTimer);
@@ -54,6 +56,7 @@ class Hooks {
 
 // ========== STATE / GLOBALS ==========
 
+const ENABLE_SCROLLTOP_COMPENSATION = true;
 const FOLDER_ROW_SELECTED_BG_ACTIVE = "#4072e5";
 const FOLDER_ROW_SELECTED_BG_INACTIVE = "#d9d9d9";
 const FOLDER_ROW_SELECTED_COLOR_ACTIVE = "#fff";
@@ -76,6 +79,11 @@ let collectionSelectionRestore: (() => void) | null = null;
 let rerenderTimer: number | null = null;
 let rafHandle: number | null = null;
 let renderInFlight = false;
+let folderRowsResizeObserver: ResizeObserver | null = null;
+let windowResizeCleanup: (() => void) | null = null;
+let extraTopOffset = 0;
+let extraTopOffsetMeasureHandle: number | null = null;
+let scrollCompensationState: ScrollCompensationState | null = null;
 
 // ========== UTILS ==========
 
@@ -728,11 +736,18 @@ function renderFolderRows(subcollections: any[]) {
   const body = findItemsBody(root);
   if (!body) {
     ztoolkit.log("Items body not found; abort folder-rows render");
+    detachFolderRowsResizeObserver();
+    setExtraTopOffset(0);
     return;
   }
   body.setAttribute("data-thiago-items-body", "true");
+  ensureScrollTopCompensation(body);
 
-  if (!subcollections || subcollections.length === 0) return;
+  if (!subcollections || subcollections.length === 0) {
+    detachFolderRowsResizeObserver();
+    setExtraTopOffset(0);
+    return;
+  }
 
   const fragment = doc.createDocumentFragment();
   const createdRows: HTMLElement[] = [];
@@ -751,12 +766,16 @@ function renderFolderRows(subcollections: any[]) {
   applyGridTemplateFromHeader(headerCells);
   applyRowStriping();
   attachItemsBodyListeners(body);
+  ensureWindowResizeListener();
+  attachFolderRowsResizeObserver(body);
+  scheduleExtraTopOffsetMeasure();
 
   // Keep columns in sync
   attachHeaderObservers(headerRow, () => {
     const freshHeaderCells = headerRow ? getHeaderCellsFrom(headerRow) : [];
     applyGridTemplateFromHeader(freshHeaderCells);
     applyRowStriping();
+    scheduleExtraTopOffsetMeasure();
   });
 }
 
@@ -873,6 +892,324 @@ function updateFolderRowGridTemplate(template: string) {
   folderRows.forEach((row) => {
     row.style.gridTemplateColumns = currentGridTemplate;
   });
+}
+
+function getExtraTopOffset(): number {
+  if (!ENABLE_SCROLLTOP_COMPENSATION) return 0;
+  return extraTopOffset;
+}
+
+function setExtraTopOffset(value: number) {
+  const clamped = Math.max(0, Math.round(value));
+  if (clamped === extraTopOffset) return;
+  const previous = extraTopOffset;
+  extraTopOffset = clamped;
+  if (!scrollCompensationState) return;
+  const delta = clamped - previous;
+  if (!delta) return;
+  try {
+    const nativeScroll = scrollCompensationState.readNative();
+    const next = Math.max(0, nativeScroll + delta);
+    scrollCompensationState.writeNative(next);
+  } catch { }
+}
+
+function scheduleExtraTopOffsetMeasure() {
+  if (!ENABLE_SCROLLTOP_COMPENSATION) return;
+  if (extraTopOffsetMeasureHandle) return;
+  extraTopOffsetMeasureHandle = requestNextFrame(() => {
+    extraTopOffsetMeasureHandle = null;
+    measureExtraTopOffsetNow();
+  });
+}
+
+function measureExtraTopOffsetNow() {
+  if (!ENABLE_SCROLLTOP_COMPENSATION) {
+    extraTopOffset = 0;
+    return;
+  }
+  const container = getFolderRowsContainer();
+  if (!container || folderRows.length === 0) {
+    setExtraTopOffset(0);
+    return;
+  }
+  const height = Math.round(folderRows.reduce((sum, row) => {
+    if (!row.isConnected) return sum;
+    const rect = row.getBoundingClientRect();
+    return sum + rect.height;
+  }, 0));
+  setExtraTopOffset(height);
+}
+
+function getFolderRowsContainer(): HTMLElement | null {
+  if (!folderRows.length) return null;
+  const first = folderRows[0];
+  return first?.parentElement || null;
+}
+
+function attachFolderRowsResizeObserver(container: HTMLElement | null) {
+  if (!ENABLE_SCROLLTOP_COMPENSATION) return;
+  detachFolderRowsResizeObserver();
+  if (!container || typeof ResizeObserver === "undefined") return;
+  try {
+    folderRowsResizeObserver = new ResizeObserver(() => scheduleExtraTopOffsetMeasure());
+    folderRowsResizeObserver.observe(container);
+  } catch {
+    folderRowsResizeObserver = null;
+  }
+}
+
+function detachFolderRowsResizeObserver() {
+  if (!folderRowsResizeObserver) return;
+  try {
+    folderRowsResizeObserver.disconnect();
+  } catch { }
+  folderRowsResizeObserver = null;
+}
+
+function ensureWindowResizeListener() {
+  if (!ENABLE_SCROLLTOP_COMPENSATION) return;
+  if (windowResizeCleanup) return;
+  try {
+    const win = getDocument().defaultView;
+    if (!win) return;
+    const handler = () => scheduleExtraTopOffsetMeasure();
+    win.addEventListener("resize", handler);
+    windowResizeCleanup = () => {
+      try {
+        win.removeEventListener("resize", handler);
+      } catch { }
+      windowResizeCleanup = null;
+    };
+  } catch { }
+}
+
+function teardownWindowResizeListener() {
+  if (!windowResizeCleanup) return;
+  try {
+    windowResizeCleanup();
+  } catch { }
+  windowResizeCleanup = null;
+}
+
+type ScrollCompensationLayer = "accessor" | "proxy";
+
+type ScrollCompensationState = {
+  scroller: HTMLElement;
+  layer: ScrollCompensationLayer;
+  teardown: () => void;
+  readNative: () => number;
+  writeNative: (value: number) => void;
+};
+
+type ScrollCompensationSetupResult = {
+  teardown: () => void;
+  readNative: () => number;
+  writeNative: (value: number) => void;
+};
+
+function ensureScrollTopCompensation(body: HTMLElement) {
+  if (!ENABLE_SCROLLTOP_COMPENSATION) return;
+  const scroller = getScrollHostForBody(body);
+  if (!scroller) return;
+  if (scrollCompensationState?.scroller === scroller) return;
+
+  teardownScrollTopCompensation();
+
+  const accessorSetup = tryPatchScrollTopAccessor(scroller);
+  if (accessorSetup) {
+    scrollCompensationState = {
+      scroller,
+      layer: "accessor",
+      teardown: accessorSetup.teardown,
+      readNative: accessorSetup.readNative,
+      writeNative: accessorSetup.writeNative,
+    };
+    ztoolkit.log("ScrollTop compensation active via accessor patch");
+    return;
+  }
+
+  const proxySetup = tryProxyScrollTop(scroller);
+  if (proxySetup) {
+    scrollCompensationState = {
+      scroller,
+      layer: "proxy",
+      teardown: proxySetup.teardown,
+      readNative: proxySetup.readNative,
+      writeNative: proxySetup.writeNative,
+    };
+    ztoolkit.log("ScrollTop compensation active via proxy fallback");
+  } else {
+    ztoolkit.log("ScrollTop compensation unavailable (no workable layer)");
+  }
+}
+
+function teardownScrollTopCompensation() {
+  if (!scrollCompensationState) return;
+  try {
+    scrollCompensationState.teardown();
+  } catch { }
+  scrollCompensationState = null;
+}
+
+function tryPatchScrollTopAccessor(scroller: HTMLElement): ScrollCompensationSetupResult | null {
+  try {
+    let proto: any = scroller;
+    let descriptor: PropertyDescriptor | undefined;
+    while (proto && !descriptor) {
+      descriptor = Object.getOwnPropertyDescriptor(proto, "scrollTop");
+      proto = Object.getPrototypeOf(proto);
+    }
+    if (!descriptor || typeof descriptor.get !== "function" || typeof descriptor.set !== "function") {
+      return null;
+    }
+
+    const patchDescriptor: PropertyDescriptor = {
+      configurable: true,
+      enumerable: descriptor.enumerable ?? false,
+      get(this: HTMLElement) {
+        const raw = descriptor!.get!.call(this);
+        const logical = raw - getExtraTopOffset();
+        return logical > 0 ? logical : 0;
+      },
+      set(this: HTMLElement, value: any) {
+        if (!descriptor!.set) return;
+        const desired = sanitizeScrollValue(value);
+        const offset = getExtraTopOffset();
+        const target = desired + offset;
+        descriptor!.set!.call(this, target < 0 ? 0 : target);
+      },
+    };
+
+    Object.defineProperty(scroller, "scrollTop", patchDescriptor);
+
+    const readNative = () => {
+      try {
+        return descriptor!.get!.call(scroller) as number;
+      } catch {
+        return sanitizeScrollValue((scroller as any).__thiagoRawScrollTop ?? 0);
+      }
+    };
+
+    const writeNative = (value: number) => {
+      try {
+        descriptor!.set!.call(scroller, value);
+      } catch {
+        try {
+          (scroller as any).__thiagoRawScrollTop = value;
+        } catch { }
+      }
+    };
+
+    return {
+      teardown: () => {
+        try {
+          delete (scroller as any).scrollTop;
+        } catch {
+          try {
+            Object.defineProperty(scroller, "scrollTop", descriptor!);
+          } catch { }
+        }
+      },
+      readNative,
+      writeNative,
+    };
+  } catch (error) {
+    ztoolkit.log("ScrollTop accessor patch failed:", error);
+    return null;
+  }
+}
+
+function tryProxyScrollTop(scroller: HTMLElement): ScrollCompensationSetupResult | null {
+  const pane = getPane();
+  const itemsView = pane?.itemsView;
+  if (!itemsView || typeof Proxy === "undefined") return null;
+
+  const keys: string[] = [];
+  try {
+    for (const key of Object.keys(itemsView)) {
+      if ((itemsView as any)[key] === scroller) {
+        keys.push(key);
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  if (!keys.length) return null;
+
+  const proxy = createScrollerProxy(scroller);
+  keys.forEach((key) => {
+    try {
+      (itemsView as any)[key] = proxy;
+    } catch { }
+  });
+
+  return {
+    teardown: () => {
+      keys.forEach((key) => {
+        try {
+          (itemsView as any)[key] = scroller;
+        } catch { }
+      });
+    },
+    readNative: () => sanitizeScrollValue(scroller.scrollTop),
+    writeNative: (value: number) => {
+      const numeric = sanitizeScrollValue(value);
+      scroller.scrollTop = Math.max(0, numeric);
+    },
+  };
+}
+
+function createScrollerProxy(scroller: HTMLElement): HTMLElement {
+  const handler: ProxyHandler<HTMLElement> = {
+    get(target, prop, receiver) {
+      if (prop === "scrollTop") {
+        const raw = Reflect.get(target, prop, target) as number;
+        const logical = raw - getExtraTopOffset();
+        return logical > 0 ? logical : 0;
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+    set(target, prop, value, receiver) {
+      if (prop === "scrollTop") {
+        const desired = sanitizeScrollValue(value);
+        const offset = getExtraTopOffset();
+        const next = Math.max(0, desired + offset);
+        Reflect.set(target, prop, next);
+        return true;
+      }
+      return Reflect.set(target, prop, value, receiver);
+    },
+  };
+  return new Proxy(scroller, handler) as unknown as HTMLElement;
+}
+
+function getScrollHostForBody(body: HTMLElement): HTMLElement {
+  if (!body) return body;
+  if (isScrollableElement(body)) return body;
+  const parent = body.parentElement as HTMLElement | null;
+  if (parent && isScrollableElement(parent)) return parent;
+  return body;
+}
+
+function isScrollableElement(el: HTMLElement): boolean {
+  if (!el) return false;
+  if (el.scrollHeight - el.clientHeight > 1) return true;
+  try {
+    const win = el.ownerDocument?.defaultView;
+    const style = win?.getComputedStyle(el);
+    if (!style) return false;
+    return style.overflowY === "auto" || style.overflowY === "scroll";
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeScrollValue(value: any): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function attachItemsBodyListeners(body: HTMLElement) {
@@ -1102,6 +1439,12 @@ function removeFolderRows() {
   folderRows = [];
   selectedFolderRow = null;
   detachItemsBodyListeners();
+  detachFolderRowsResizeObserver();
+  if (extraTopOffsetMeasureHandle) {
+    cancelFrame(extraTopOffsetMeasureHandle);
+    extraTopOffsetMeasureHandle = null;
+  }
+  setExtraTopOffset(0);
   updateZebraFlipFlag();
 }
 
