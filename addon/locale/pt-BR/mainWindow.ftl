@@ -1,0 +1,11 @@
+item-section-example1-head-text =
+    .label = Modelo do Complemento: Informações do Item
+item-section-example1-sidenav-tooltip =
+    .tooltiptext = Esta é a seção do modelo do complemento (informações do item)
+item-section-example2-head-text =
+    .label = Modelo do Complemento: Leitor [{$status}]
+item-section-example2-sidenav-tooltip =
+    .tooltiptext = Esta é a seção do modelo do complemento (leitor)
+item-section-example2-button-tooltip =
+    .tooltiptext = Cancelar o registro desta seção
+item-info-row-example-label = Linha de exemplo

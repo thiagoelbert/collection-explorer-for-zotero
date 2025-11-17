@@ -1,5 +1,6 @@
 import { debugCurrentState, scheduleRerender, setupCollectionChangeListener, teardownCollectionChangeListener, shutdownFolderRows } from "./folderRows";
 import { configureNavigation, isNavStripEnabled, setNavStripEnabled } from "./navigation";
+import { getString, initLocale } from "./utils/locale";
 
 /**
  * Clean build:
@@ -14,10 +15,13 @@ class Hooks {
 
     await Zotero.uiReadyPromise;
     ztoolkit.log("UI ready");
+    initLocale();
 
     const toggleNavMenuId = "zotero-plugin-toggle-nav-strip";
     const getToggleNavLabel = () =>
-      isNavStripEnabled() ? "Disable Navigation Bar" : "Enable Navigation Bar";
+      getString("nav-strip-toggle", {
+        branch: isNavStripEnabled() ? "disable" : "enable",
+      });
     const refreshToggleNavLabel = () => {
       try {
         const doc = Zotero.getMainWindow()?.document;

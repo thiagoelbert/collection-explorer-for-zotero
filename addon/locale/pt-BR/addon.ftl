@@ -1,0 +1,14 @@
+startup-begin = O complemento está carregando
+startup-finish = O complemento está pronto
+menuitem-label = Modelo do Complemento: Exemplos de Ajuda
+menupopup-label = Modelo do Complemento: Menu popup
+menuitem-submenulabel = Modelo do Complemento
+menuitem-filemenulabel = Modelo do Complemento: Item de menu Arquivo
+prefs-title = Modelo
+prefs-table-title = Título
+prefs-table-detail = Detalhe
+nav-strip-toggle =
+    .enable = Ativar barra de navegação
+    .disable = Desativar barra de navegação
+tabpanel-lib-tab-label = Aba da Biblioteca
+tabpanel-reader-tab-label = Aba do Leitor
