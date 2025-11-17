@@ -19,6 +19,8 @@ let navIndex = -1;
 const pendingHistoryNavigations: number[] = [];
 let navStripEnabled = true;
 let navStripCleanup: (() => void) | null = null;
+let navOverflowMenuCleanup: (() => void) | null = null;
+let navOverflowMenuAnchor: HTMLElement | null = null;
 
 function logNav(message: string, extra?: Record<string, unknown>) {
   if (!NAV_DEBUG) return;
@@ -33,6 +35,12 @@ function logNav(message: string, extra?: Record<string, unknown>) {
 }
 
 type PathSeg = { label: string; collectionID: number | null };
+
+type BreadcrumbNode = {
+  seg: PathSeg;
+  crumb: HTMLSpanElement;
+  separator: HTMLSpanElement | null;
+};
 
 export function isNavStripEnabled() {
   return navStripEnabled;
@@ -134,6 +142,8 @@ function ensureNavStripCSS(doc: Document) {
     border-bottom:1px solid var(--color-border, #dadada);
     background:var(--material-toolbar, #f9f9f9);
     position:sticky; top:0; z-index: 1;
+    box-sizing:border-box;
+    max-width:100%;
   }
   #thiago-nav-strip button {
     border:none; background:transparent; padding:4px 6px; border-radius:6px;
@@ -146,15 +156,47 @@ function ensureNavStripCSS(doc: Document) {
     padding:2px 6px; border-radius:6px; background: var(--material-button, #fff); border:1px solid var(--color-border, #dadada);
     overflow:hidden;
   }
+  #thiago-nav-breadcrumbs {
+    display:flex; align-items:center; gap:4px;
+    flex-wrap:nowrap;
+    overflow:hidden;
+    min-width:0;
+    white-space:nowrap;
+  }
   .thiago-crumb {
     display:inline-flex; align-items:center; gap:6px; white-space:nowrap; padding:2px 4px; border-radius:4px; cursor:pointer;
+    flex-shrink:0;
   }
   .thiago-crumb:hover { background: var(--accent-blue10, rgba(64,114,229,.1)); }
+  .thiago-crumb.thiago-nav-menu-open { background: var(--accent-blue20, rgba(64,114,229,.2)); }
+  .thiago-crumb-ellipsis { font-weight:600; }
   .thiago-crumb-sep {
     opacity:.6;
     user-select:none;
     margin:0 4px;
   }
+  .thiago-nav-overflow-menu {
+    position:fixed;
+    display:flex;
+    flex-direction:column;
+    background: var(--material-button, #fff);
+    border:1px solid var(--color-border, #dadada);
+    border-radius:6px;
+    box-shadow:0 6px 20px rgba(0,0,0,.15);
+    padding:4px 0;
+    z-index:2147483647;
+    min-width:160px;
+  }
+  .thiago-nav-overflow-menu button {
+    background:transparent;
+    border:none;
+    text-align:left;
+    padding:6px 12px;
+    font:inherit;
+    cursor:pointer;
+  }
+  .thiago-nav-overflow-menu button:hover { background: var(--accent-blue10, rgba(64,114,229,.1)); }
+  .thiago-nav-overflow-menu button:disabled { opacity:.5; cursor:default; }
   #thiago-nav-input {
     width:100%; border:none; outline:none; background:transparent; font:inherit; padding:0;
   }
@@ -269,7 +311,11 @@ export function mountNavStrip(doc: Document) {
   crumbs.style.display = "flex";
   crumbs.style.alignItems = "center";
   crumbs.style.gap = "4px";
-  crumbs.style.flexWrap = "wrap";
+  crumbs.style.flexWrap = "nowrap";
+  crumbs.style.overflow = "hidden";
+  crumbs.style.minWidth = "0";
+  crumbs.style.whiteSpace = "nowrap";
+  crumbs.style.flex = "1";
 
   const input = doc.createElement("input");
   input.id = "thiago-nav-input";
@@ -289,6 +335,7 @@ export function mountNavStrip(doc: Document) {
   pathRow.append(pathBox);
 
   strip.append(buttonsWrap, pathRow);
+  const cleanupTasks: Array<() => void> = [];
 
   const itemsPaneContainer =
     doc.getElementById("zotero-items-pane-container") ||
@@ -330,6 +377,9 @@ export function mountNavStrip(doc: Document) {
   });
   input.addEventListener("blur", () => stopEditPath());
 
+  const widthCleanup = setupNavStripWidthTracking(doc, strip);
+  if (widthCleanup) cleanupTasks.push(widthCleanup);
+
   const keydownHandler = (ev: KeyboardEvent) => {
     if (ev.altKey && ev.key === "ArrowLeft") {
       ev.preventDefault();
@@ -346,14 +396,20 @@ export function mountNavStrip(doc: Document) {
     }
   };
   doc.addEventListener("keydown", keydownHandler);
+  cleanupTasks.push(() => {
+    doc.removeEventListener("keydown", keydownHandler);
+  });
   navStripCleanup = () => {
-    try {
-      doc.removeEventListener("keydown", keydownHandler);
-    } catch { }
+    cleanupTasks.splice(0).forEach(fn => {
+      try {
+        fn();
+      } catch { }
+    });
     navStripCleanup = null;
   };
 
   function startEditPath(selectAll = false) {
+    closeBreadcrumbOverflowMenu();
     pathBox.classList.add("editing");
     crumbs.style.display = "none";
     input.style.display = "block";
@@ -399,21 +455,31 @@ export function updateNavStrip(selected?: any) {
   }
   const crumbs = doc.getElementById("thiago-nav-breadcrumbs");
   if (!crumbs) return;
+  closeBreadcrumbOverflowMenu();
   crumbs.textContent = "";
   const sel = selected ?? getPane()?.getSelectedCollection();
   const segs = getPathSegments(sel);
+  const crumbNodes: BreadcrumbNode[] = [];
   segs.forEach((seg, idx) => {
+    let separator: HTMLSpanElement | null = null;
     if (idx > 0) {
       const sep = doc.createElement("span");
       sep.className = "thiago-crumb-sep";
       sep.textContent = ">";
       crumbs.appendChild(sep);
+      separator = sep;
     }
     const crumb = doc.createElement("span");
     crumb.className = "thiago-crumb";
     crumb.textContent = seg.label;
     crumb.title = seg.label;
     crumb.tabIndex = 0;
+    crumb.setAttribute("data-thiago-label", seg.label);
+    if (seg.collectionID != null) {
+      crumb.setAttribute("data-thiago-collection-id", String(seg.collectionID));
+    } else {
+      crumb.removeAttribute("data-thiago-collection-id");
+    }
     crumb.addEventListener("click", () => {
       if (seg.collectionID != null) {
         navigateToCollection(seg.collectionID);
@@ -428,7 +494,9 @@ export function updateNavStrip(selected?: any) {
       }
     });
     crumbs.appendChild(crumb);
+    crumbNodes.push({ seg, crumb, separator });
   });
+  scheduleBreadcrumbOverflowMeasurement(doc, crumbs, crumbNodes);
   updateNavButtonsEnabled();
 }
 
@@ -505,6 +573,323 @@ function expandParentCollections(collectionID: number) {
   }
 }
 
+function setupNavStripWidthTracking(doc: Document, strip: HTMLElement) {
+  const win = doc.defaultView;
+  const schedule = (() => {
+    let pending = false;
+    const run = () => {
+      pending = false;
+      updateNavStripWidth(doc, strip);
+      refreshBreadcrumbOverflow(doc);
+    };
+    return () => {
+      if (pending) return;
+      pending = true;
+      if (win?.requestAnimationFrame) {
+        win.requestAnimationFrame(run);
+      } else {
+        setTimeout(run, 0);
+      }
+    };
+  })();
+
+  schedule();
+
+  const cleanupFns: Array<() => void> = [];
+
+  if (win?.ResizeObserver) {
+    const observer = new win.ResizeObserver(() => schedule());
+    const observed = new Set<HTMLElement>();
+    const maybeObserve = (el: HTMLElement | null) => {
+      if (el && !observed.has(el)) {
+        observer.observe(el);
+        observed.add(el);
+      }
+    };
+    maybeObserve(doc.getElementById("zotero-items-pane") as HTMLElement | null);
+    maybeObserve(doc.getElementById("zotero-items-pane-container") as HTMLElement | null);
+    maybeObserve(doc.getElementById("zotero-layout-switcher") as HTMLElement | null);
+    if (observed.size) {
+      cleanupFns.push(() => observer.disconnect());
+    }
+  }
+
+  if (win) {
+    const handler = () => schedule();
+    win.addEventListener("resize", handler);
+    cleanupFns.push(() => win.removeEventListener("resize", handler));
+  }
+
+  if (!cleanupFns.length) {
+    return () => { };
+  }
+  return () => {
+    cleanupFns.splice(0).forEach(fn => {
+      try {
+        fn();
+      } catch { }
+    });
+  };
+}
+
+function updateNavStripWidth(doc: Document, strip?: HTMLElement | null) {
+  const nav = strip ?? (doc.getElementById("thiago-nav-strip") as HTMLElement | null);
+  if (!nav) return;
+  const hostRect = getNavHostRect(doc);
+  if (hostRect && hostRect.width > 0) {
+    nav.style.maxWidth = `${hostRect.width}px`;
+    nav.style.width = "100%";
+  } else {
+    nav.style.maxWidth = "";
+    nav.style.width = "100%";
+  }
+}
+
+function getNavHostRect(doc: Document): DOMRect | null {
+  const itemsPane = doc.getElementById("zotero-items-pane") as HTMLElement | null;
+  if (itemsPane) {
+    const rect = itemsPane.getBoundingClientRect();
+    if (rect.width) return rect;
+  }
+  const fallback = doc.getElementById("zotero-items-pane-container") as HTMLElement | null;
+  return fallback?.getBoundingClientRect() ?? null;
+}
+
+function refreshBreadcrumbOverflow(doc: Document) {
+  const crumbs = doc.getElementById("thiago-nav-breadcrumbs") as HTMLElement | null;
+  if (!crumbs || crumbs.style.display === "none" || !crumbs.isConnected) return;
+  closeBreadcrumbOverflowMenu();
+  removeBreadcrumbEllipsis(crumbs);
+  const nodes = collectBreadcrumbNodesFromDOM(doc, crumbs);
+  if (!nodes.length) return;
+  nodes.forEach(node => {
+    node.crumb.style.display = "";
+    if (node.separator) node.separator.style.display = "";
+  });
+  scheduleBreadcrumbOverflowMeasurement(doc, crumbs, nodes);
+}
+
+function removeBreadcrumbEllipsis(crumbsEl: HTMLElement) {
+  const toRemove = crumbsEl.querySelectorAll(".thiago-crumb-ellipsis, .thiago-crumb-ellipsis-sep");
+  toRemove.forEach(el => {
+    if (el.parentElement === crumbsEl) {
+      el.remove();
+    }
+  });
+}
+
+function collectBreadcrumbNodesFromDOM(doc: Document, crumbsEl: HTMLElement): BreadcrumbNode[] {
+  const nodes: BreadcrumbNode[] = [];
+  let child = crumbsEl.firstElementChild;
+  while (child) {
+    if (
+      child.classList.contains("thiago-crumb") &&
+      !child.classList.contains("thiago-crumb-ellipsis")
+    ) {
+      const crumb = child as HTMLSpanElement;
+      const prev = crumb.previousElementSibling;
+      const separator =
+        prev && prev.classList.contains("thiago-crumb-sep") ? (prev as HTMLSpanElement) : null;
+      const label = crumb.getAttribute("data-thiago-label") || crumb.textContent || "";
+      const collectionAttr = crumb.getAttribute("data-thiago-collection-id");
+      const seg: PathSeg = {
+        label,
+        collectionID: collectionAttr && collectionAttr.length ? Number(collectionAttr) : null,
+      };
+      nodes.push({ seg, crumb, separator });
+    }
+    child = child.nextElementSibling;
+  }
+  return nodes;
+}
+
+function scheduleBreadcrumbOverflowMeasurement(
+  doc: Document,
+  crumbsEl: HTMLElement,
+  nodes: BreadcrumbNode[],
+) {
+  if (!nodes.length) return;
+  const runner = () => {
+    if (!crumbsEl.isConnected) return;
+    applyBreadcrumbOverflow(doc, crumbsEl, nodes);
+  };
+  const win = doc.defaultView;
+  if (win?.requestAnimationFrame) {
+    win.requestAnimationFrame(runner);
+  } else {
+    setTimeout(runner, 0);
+  }
+}
+
+function applyBreadcrumbOverflow(
+  doc: Document,
+  crumbsEl: HTMLElement,
+  nodes: BreadcrumbNode[],
+) {
+  const containerWidth = getBreadcrumbAvailableWidth(doc, crumbsEl);
+  if (!containerWidth) {
+    crumbsEl.style.maxWidth = "";
+    return;
+  }
+  crumbsEl.style.maxWidth = `${containerWidth}px`;
+  const hidden: BreadcrumbNode[] = [];
+  const isOverflowing = () => crumbsEl.scrollWidth > containerWidth + 1;
+  if (!isOverflowing()) return;
+  for (let i = 0; i < nodes.length - 1 && isOverflowing(); i++) {
+    const node = nodes[i];
+    hidden.push(node);
+    node.crumb.style.display = "none";
+    if (node.separator) node.separator.style.display = "none";
+    const next = nodes[i + 1];
+    if (next?.separator) next.separator.style.display = "none";
+  }
+  if (!hidden.length) return;
+  insertBreadcrumbEllipsis(doc, crumbsEl, hidden.map(n => n.seg));
+}
+
+function getBreadcrumbAvailableWidth(doc: Document, crumbsEl: HTMLElement) {
+  const hostRect = getNavHostRect(doc);
+  if (hostRect) {
+    const crumbsRect = crumbsEl.getBoundingClientRect();
+    const available = hostRect.right - crumbsRect.left - 4;
+    if (available > 0) {
+      return available;
+    }
+  }
+  return crumbsEl.clientWidth || crumbsEl.getBoundingClientRect().width || 0;
+}
+
+function insertBreadcrumbEllipsis(doc: Document, crumbsEl: HTMLElement, segments: PathSeg[]) {
+  if (!segments.length) return;
+  const ellipsis = doc.createElement("span");
+  ellipsis.className = "thiago-crumb thiago-crumb-ellipsis";
+  ellipsis.textContent = "\u2026";
+  ellipsis.title = segments.map(seg => seg.label).join(" > ");
+  ellipsis.tabIndex = 0;
+  ellipsis.setAttribute("role", "button");
+  const activate = () => toggleBreadcrumbOverflowMenu(ellipsis, segments);
+  ellipsis.addEventListener("click", ev => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    activate();
+  });
+  ellipsis.addEventListener("keydown", ev => {
+    if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      activate();
+    }
+  });
+  const sep = doc.createElement("span");
+  sep.className = "thiago-crumb-sep thiago-crumb-ellipsis-sep";
+  sep.textContent = ">";
+  crumbsEl.prepend(sep);
+  crumbsEl.prepend(ellipsis);
+}
+
+function toggleBreadcrumbOverflowMenu(target: HTMLElement, segments: PathSeg[]) {
+  if (navOverflowMenuAnchor === target) {
+    closeBreadcrumbOverflowMenu();
+  } else {
+    openBreadcrumbOverflowMenu(target, segments);
+  }
+}
+
+function openBreadcrumbOverflowMenu(target: HTMLElement, segments: PathSeg[]) {
+  closeBreadcrumbOverflowMenu();
+  const doc = target.ownerDocument;
+  if (!doc) return;
+  const host = doc.body || doc.documentElement;
+  if (!host) return;
+  const menu = doc.createElement("div");
+  menu.id = "thiago-nav-overflow-menu";
+  menu.className = "thiago-nav-overflow-menu";
+  menu.setAttribute("role", "menu");
+  menu.tabIndex = -1;
+  segments.forEach(seg => {
+    const item = doc.createElement("button");
+    item.className = "thiago-nav-menu-item";
+    item.type = "button";
+    item.textContent = seg.label;
+    item.title = seg.label;
+    item.setAttribute("role", "menuitem");
+    if (seg.collectionID == null) {
+      item.disabled = true;
+    } else {
+      const targetID = seg.collectionID;
+      item.addEventListener("click", () => {
+        closeBreadcrumbOverflowMenu();
+        navigateToCollection(targetID);
+        deps.scheduleRerender(120);
+      });
+    }
+    menu.appendChild(item);
+  });
+  if (!menu.childElementCount) {
+    menu.remove();
+    return;
+  }
+  host.appendChild(menu);
+  const rect = target.getBoundingClientRect();
+  const menuRect = menu.getBoundingClientRect();
+  const win = doc.defaultView;
+  const viewportWidth =
+    win?.innerWidth ??
+    doc.documentElement?.clientWidth ??
+    host.clientWidth ??
+    menuRect.width;
+  const viewportHeight =
+    win?.innerHeight ??
+    doc.documentElement?.clientHeight ??
+    host.clientHeight ??
+    menuRect.height;
+  let left = rect.left;
+  let top = rect.bottom + 4;
+  if (left + menuRect.width > viewportWidth - 8) {
+    left = Math.max(8, viewportWidth - menuRect.width - 8);
+  }
+  if (top + menuRect.height > viewportHeight - 8) {
+    top = Math.max(8, rect.top - menuRect.height - 4);
+  }
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  const handlePointer = (ev: MouseEvent) => {
+    const node = ev.target as Node | null;
+    if (node && (menu.contains(node) || target.contains(node))) return;
+    closeBreadcrumbOverflowMenu();
+  };
+  const handleKey = (ev: KeyboardEvent) => {
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      closeBreadcrumbOverflowMenu();
+    }
+  };
+  doc.addEventListener("mousedown", handlePointer, true);
+  doc.addEventListener("contextmenu", handlePointer, true);
+  doc.addEventListener("keydown", handleKey, true);
+  navOverflowMenuCleanup = () => {
+    try {
+      menu.remove();
+    } catch { }
+    doc.removeEventListener("mousedown", handlePointer, true);
+    doc.removeEventListener("contextmenu", handlePointer, true);
+    doc.removeEventListener("keydown", handleKey, true);
+    target.classList.remove("thiago-nav-menu-open");
+    navOverflowMenuAnchor = null;
+  };
+  navOverflowMenuAnchor = target;
+  target.classList.add("thiago-nav-menu-open");
+}
+
+function closeBreadcrumbOverflowMenu() {
+  if (navOverflowMenuCleanup) {
+    try {
+      navOverflowMenuCleanup();
+    } catch { }
+    navOverflowMenuCleanup = null;
+    navOverflowMenuAnchor = null;
+  }
+}
+
 function removeNavStrip(doc?: Document) {
   const documentRef = doc ?? (() => {
     try {
@@ -514,6 +899,7 @@ function removeNavStrip(doc?: Document) {
     }
   })();
   if (!documentRef) return;
+  closeBreadcrumbOverflowMenu();
   const strip = documentRef.getElementById("thiago-nav-strip");
   if (strip) {
     try {
