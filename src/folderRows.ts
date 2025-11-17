@@ -16,6 +16,8 @@ let folderRows: HTMLElement[] = [];
 let currentGridTemplate = "auto";
 let selectedFolderRow: HTMLElement | null = null;
 let itemsBodyCleanup: (() => void) | null = null;
+let itemsBodyElement: HTMLElement | null = null;
+let itemsKeyboardTarget: HTMLElement | null = null;
 let itemsPaneHasFocus = false;
 let lastRenderedCollectionID: number | null = null;
 let checkInterval: any = null;
@@ -362,6 +364,21 @@ function buildFolderRow(subCol: any): HTMLElement {
       ev.preventDefault();
       navigateToCollection(subCol.id);
       scheduleRerender(260);
+      return;
+    }
+    if (ev.key === "ArrowRight") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      return;
+    }
+    if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+      if (ev.altKey || ev.ctrlKey || ev.metaKey) return;
+      const delta = ev.key === "ArrowDown" ? 1 : -1;
+      const handled = handleFolderRowArrowNavigation(delta, row);
+      if (handled) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
     }
   });
 
@@ -793,6 +810,10 @@ function setScrollerActualScroll(scroller: HTMLElement, actualValue: number): bo
 
 function attachItemsBodyListeners(body: HTMLElement) {
   detachItemsBodyListeners();
+  itemsBodyElement = body;
+  const keydownTarget =
+    (body.closest(".virtualized-table") as HTMLElement | null) || body;
+  itemsKeyboardTarget = keydownTarget;
   const handleFocusIn = (event: FocusEvent) => {
     const target = event.target as HTMLElement | null;
     if (!target) return;
@@ -821,13 +842,35 @@ function attachItemsBodyListeners(body: HTMLElement) {
     }
     if (selectedFolderRow) setSelectedFolderRow(null);
   };
+
+  const handleKeyDown = (event: KeyboardEvent) => {
+    if (event.key !== "ArrowUp") return;
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    if (!folderRows.length) return;
+    const target = event.target as HTMLElement | null;
+    if (!target) return;
+    if (target.closest(".thiago-folder-row")) return;
+    const row =
+      (target.closest('[role="row"], [role="treeitem"], .row') as HTMLElement | null) ||
+      getFocusedNativeRow();
+    if (!row || !isFirstNativeRow(row)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const lastFolder = folderRows[folderRows.length - 1];
+    if (lastFolder) setSelectedFolderRow(lastFolder);
+  };
+
   body.addEventListener("focusin", handleFocusIn, true);
   body.addEventListener("focusout", handleFocusOut, true);
   body.addEventListener("mousedown", handleMouseDown, true);
+  keydownTarget?.addEventListener("keydown", handleKeyDown, true);
   itemsBodyCleanup = () => {
     body.removeEventListener("focusin", handleFocusIn, true);
     body.removeEventListener("focusout", handleFocusOut, true);
     body.removeEventListener("mousedown", handleMouseDown, true);
+    keydownTarget?.removeEventListener("keydown", handleKeyDown, true);
+    itemsBodyElement = null;
+    itemsKeyboardTarget = null;
     itemsBodyCleanup = null;
   };
 }
@@ -852,6 +895,170 @@ function applyRowStriping() {
   });
 }
 
+function handleFolderRowArrowNavigation(delta: number, originRow: HTMLElement): boolean {
+  if (!folderRows.length) return false;
+  const currentIndex = folderRows.indexOf(originRow);
+  if (currentIndex === -1) return false;
+
+  const isAtStart = currentIndex === 0;
+  const isAtEnd = currentIndex === folderRows.length - 1;
+
+  if (delta < 0 && isAtStart) {
+    return true;
+  }
+
+  if (delta > 0 && isAtEnd) {
+    if (hasNativeItemRows()) {
+      setSelectedFolderRow(null);
+      const firstNative = getFirstNativeRow();
+      if (firstNative) {
+        selectNativeRowElement(firstNative);
+      }
+      return true;
+    }
+    return true;
+  }
+
+  const nextIndex = Math.max(0, Math.min(folderRows.length - 1, currentIndex + delta));
+  const nextRow = folderRows[nextIndex];
+  if (nextRow && nextRow !== originRow) {
+    setSelectedFolderRow(nextRow);
+  }
+  return true;
+}
+
+const NATIVE_ROW_SELECTOR =
+  '.windowed-list .row, [role="treeitem"], [role="row"]:not(.thiago-folder-row)';
+const NATIVE_FOCUSED_SELECTOR =
+  '.windowed-list .row.focused, [role="treeitem"].focused, [role="row"].focused';
+
+function getNativeRows(): HTMLElement[] {
+  if (!itemsBodyElement) return [];
+  const nodes = itemsBodyElement.querySelectorAll(NATIVE_ROW_SELECTOR);
+  const rows: HTMLElement[] = [];
+  const seen = new Set<HTMLElement>();
+  nodes.forEach((node: Element) => {
+    const element = node as HTMLElement;
+    if (!isNativeItemRow(element)) return;
+    if (seen.has(element)) return;
+    seen.add(element);
+    rows.push(element);
+  });
+  return rows;
+}
+
+function getFirstNativeRow(): HTMLElement | null {
+  const rows = getNativeRows();
+  return rows.length ? rows[0] : null;
+}
+
+function hasNativeItemRows(): boolean {
+  return getNativeRows().length > 0;
+}
+
+function isFirstNativeRow(row: HTMLElement): boolean {
+  const rows = getNativeRows();
+  if (!rows.length) return false;
+  return rows[0] === row;
+}
+
+function getFocusedNativeRow(): HTMLElement | null {
+  if (!itemsBodyElement) return null;
+  return itemsBodyElement.querySelector(NATIVE_FOCUSED_SELECTOR) as HTMLElement | null;
+}
+
+function clearNativeRowFocus() {
+  if (!itemsBodyElement) return;
+  const nodes = itemsBodyElement.querySelectorAll(NATIVE_FOCUSED_SELECTOR);
+  for (const node of Array.from(nodes)) {
+    (node as HTMLElement).classList.remove("focused");
+  }
+}
+
+function isNativeItemRow(node: HTMLElement): boolean {
+  if (!node) return false;
+  if (node.classList.contains("thiago-folder-row")) return false;
+  const role = node.getAttribute("role");
+  if (role === "treeitem") return true;
+  if (role === "row") return true;
+  return node.classList.contains("row");
+}
+
+function selectNativeRowElement(row: HTMLElement) {
+  const index = getNativeRowIndex(row);
+  const pane = getPane();
+  const itemsView = pane?.itemsView;
+  if (!itemsView) return;
+  const selection =
+    itemsView.selection ||
+    itemsView.tree?.selection ||
+    itemsView.tree?.view?.selection ||
+    itemsView._treebox?.selection ||
+    itemsView._treebox?.view?.selection;
+
+  if (index != null) {
+    try {
+      if (selection?.clearAndSelect) {
+        selection.clearAndSelect(index);
+      } else if (selection?.select) {
+        selection.select(index);
+      }
+    } catch { }
+  } else {
+    try {
+      row.click();
+    } catch { }
+  }
+
+  focusItemsTreeContainer();
+}
+
+function getNativeRowIndex(row: HTMLElement): number | null {
+  const ariaIndex = row.getAttribute("aria-rowindex");
+  if (ariaIndex) {
+    const parsed = Number(ariaIndex);
+    if (Number.isFinite(parsed)) return parsed - 1;
+  }
+  const dataIndex = (row as any)?.dataset?.index;
+  if (dataIndex != null) {
+    const parsed = Number(dataIndex);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  if (row.id) {
+    const match = row.id.match(/row-(\d+)/);
+    if (match) {
+      const parsed = Number(match[1]);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return null;
+}
+
+function getItemsKeyboardTarget(): HTMLElement | null {
+  if (!itemsKeyboardTarget && itemsBodyElement) {
+    itemsKeyboardTarget =
+      (itemsBodyElement.closest(".virtualized-table") as HTMLElement | null) ||
+      itemsBodyElement;
+  }
+  return itemsKeyboardTarget;
+}
+
+function focusItemsTreeContainer() {
+  const target = getItemsKeyboardTarget();
+  if (!target) return;
+  try {
+    target.focus();
+  } catch { }
+}
+
+function blurItemsTreeContainer() {
+  const target = getItemsKeyboardTarget();
+  if (!target) return;
+  try {
+    target.blur();
+  } catch { }
+}
+
 function setSelectedFolderRow(row: HTMLElement | null) {
   if (selectedFolderRow === row) return;
   if (selectedFolderRow) {
@@ -862,10 +1069,14 @@ function setSelectedFolderRow(row: HTMLElement | null) {
   }
 
   selectedFolderRow = row;
-  if (!row) return;
+  if (!row) {
+    itemsPaneHasFocus = false;
+    return;
+  }
 
   row.classList.add("thiago-folder-row--selected");
   itemsPaneHasFocus = true;
+  blurItemsTreeContainer();
   try {
     row.focus();
   } catch { }
@@ -929,6 +1140,7 @@ function clearNativeItemSelection() {
     if (treeSelection?.clearSelection) {
       treeSelection.clearSelection();
     }
+    clearNativeRowFocus();
   } catch { }
 }
 

@@ -25,6 +25,11 @@ export function ensureGlobalStyles(doc: Document) {
     #zotero-items-tree[data-thiago-flip="1"] .virtualized-table .row.odd:not(.selected) {
       background-color: var(--material-background) !important;
     }
+    .thiago-folder-row:focus,
+    .thiago-folder-row:focus-visible {
+      outline: none;
+      box-shadow: none;
+    }
   `;
   const head = doc.head || doc.querySelector("head") || doc.documentElement;
   if (!head) return;
