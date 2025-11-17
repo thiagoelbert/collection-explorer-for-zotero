@@ -21,6 +21,7 @@ pacjkage-lock.json
 # Temporary ignore
 test
 fullDOM.html
+tmpOldHooks.ts
 
 #Cspell
 cspell.json
