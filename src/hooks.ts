@@ -1,5 +1,5 @@
 import { debugCurrentState, scheduleRerender, setupCollectionChangeListener, teardownCollectionChangeListener, shutdownFolderRows } from "./folderRows";
-import { configureNavigation } from "./navigation";
+import { configureNavigation, isNavStripEnabled, setNavStripEnabled } from "./navigation";
 
 /**
  * Clean build:
@@ -15,17 +15,27 @@ class Hooks {
     await Zotero.uiReadyPromise;
     ztoolkit.log("UI ready");
 
+    const toggleNavMenuId = "zotero-plugin-toggle-nav-strip";
+    const getToggleNavLabel = () =>
+      isNavStripEnabled() ? "Disable Navigation Bar" : "Enable Navigation Bar";
+    const refreshToggleNavLabel = () => {
+      try {
+        const doc = Zotero.getMainWindow()?.document;
+        const el = doc?.getElementById(toggleNavMenuId);
+        if (el) el.setAttribute("label", getToggleNavLabel());
+      } catch { }
+    };
+
     ztoolkit.Menu.register("menuTools", {
       tag: "menuitem",
-      id: "zotero-plugin-hello",
-      label: "Hello from MyPlugin",
+      id: toggleNavMenuId,
+      label: getToggleNavLabel(),
       commandListener: () => {
-        new ztoolkit.ProgressWindow(ADDON_NAME)
-          .createLine({ text: "Hello from MyPlugin!", type: "success" })
-          .show();
-        debugCurrentState();
+        setNavStripEnabled(!isNavStripEnabled());
+        refreshToggleNavLabel();
       },
     });
+    Zotero.Promise.delay(0).then(refreshToggleNavLabel).catch(() => { });
 
     await Zotero.Promise.delay(400);
     scheduleRerender(10);

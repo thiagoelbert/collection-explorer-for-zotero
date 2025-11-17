@@ -13,10 +13,40 @@ export function configureNavigation(newDeps: NavigationDeps) {
 }
 
 // --- history ---
+const NAV_DEBUG = false;
 const navHistory: number[] = [];
 let navIndex = -1;
+const pendingHistoryNavigations: number[] = [];
+let navStripEnabled = true;
+let navStripCleanup: (() => void) | null = null;
+
+function logNav(message: string, extra?: Record<string, unknown>) {
+  if (!NAV_DEBUG) return;
+  const stack = navHistory.join(">");
+  const pending = pendingHistoryNavigations.join(">");
+  const state = `idx=${navIndex} hist=[${stack}] pending=[${pending}]`;
+  if (extra && Object.keys(extra).length) {
+    ztoolkit.log(`[Nav] ${message} | ${state} | ${JSON.stringify(extra)}`);
+  } else {
+    ztoolkit.log(`[Nav] ${message} | ${state}`);
+  }
+}
 
 type PathSeg = { label: string; collectionID: number | null };
+
+export function isNavStripEnabled() {
+  return navStripEnabled;
+}
+
+export function setNavStripEnabled(value: boolean) {
+  if (navStripEnabled === value) return;
+  navStripEnabled = value;
+  if (!value) {
+    removeNavStrip();
+  } else {
+    updateNavStrip();
+  }
+}
 
 export function navigateUp() {
   const pane = getPane();
@@ -38,7 +68,10 @@ function commitPath(raw: string) {
 }
 
 function resolveCollectionByPath(input: string): any | null {
-  const parts = input.split("/").map(s => s.trim()).filter(Boolean);
+  const parts = input
+    .split(/[\\/]/)
+    .map(s => s.trim())
+    .filter(Boolean);
   if (!parts.length) return null;
 
   const pane = getPane();
@@ -86,7 +119,7 @@ export function getCurrentPathString(): string {
   const sel = getPane()?.getSelectedCollection();
   if (!sel) return "Library";
   const segs = getPathSegments(sel).map(s => s.label);
-  return segs.join(" / ");
+  return segs.join("\\");
 }
 
 function ensureNavStripCSS(doc: Document) {
@@ -117,7 +150,11 @@ function ensureNavStripCSS(doc: Document) {
     display:inline-flex; align-items:center; gap:6px; white-space:nowrap; padding:2px 4px; border-radius:4px; cursor:pointer;
   }
   .thiago-crumb:hover { background: var(--accent-blue10, rgba(64,114,229,.1)); }
-  .thiago-crumb-sep { opacity:.6; user-select:none; }
+  .thiago-crumb-sep {
+    opacity:.6;
+    user-select:none;
+    margin:0 4px;
+  }
   #thiago-nav-input {
     width:100%; border:none; outline:none; background:transparent; font:inherit; padding:0;
   }
@@ -129,15 +166,35 @@ function ensureNavStripCSS(doc: Document) {
 
 export function pushToHistory(id: number | null) {
   if (id == null) return;
+  if (
+    pendingHistoryNavigations.length &&
+    pendingHistoryNavigations[0] === id
+  ) {
+    pendingHistoryNavigations.shift();
+    updateNavButtonsEnabled();
+    logNav("push skip (pending match)", { id });
+    return;
+  }
+  if (pendingHistoryNavigations.length) {
+    logNav("push ignored (waiting for pending match)", { id, waitingFor: pendingHistoryNavigations[0] });
+    return;
+  }
+  if (navIndex >= 0 && navHistory[navIndex] === id) {
+    updateNavButtonsEnabled();
+    logNav("push no-op (same index)", { id });
+    return;
+  }
   if (navHistory.length && navHistory[navHistory.length - 1] === id) {
     navIndex = navHistory.length - 1;
     updateNavButtonsEnabled();
+    logNav("push collapse duplicate tail", { id });
     return;
   }
   if (navIndex < navHistory.length - 1) navHistory.splice(navIndex + 1);
   navHistory.push(id);
   navIndex = navHistory.length - 1;
   updateNavButtonsEnabled();
+  logNav("push add", { id });
 }
 
 function canGo(delta: -1 | 1) {
@@ -149,11 +206,18 @@ export function navigateHistory(delta: -1 | 1) {
   if (!canGo(delta)) return;
   navIndex += delta;
   const id = navHistory[navIndex];
+  pendingHistoryNavigations.push(id);
+  logNav("navigate", { delta, id });
   navigateToCollection(id);
   deps.scheduleRerender(120);
+  updateNavButtonsEnabled();
 }
 
 export function mountNavStrip(doc: Document) {
+  if (!navStripEnabled) {
+    removeNavStrip(doc);
+    return;
+  }
   if (doc.getElementById("thiago-nav-strip")) return;
 
   const pane = getPane();
@@ -251,7 +315,10 @@ export function mountNavStrip(doc: Document) {
   fwdBtn.addEventListener("click", () => navigateHistory(1));
   upBtn.addEventListener("click", () => navigateUp());
 
-  pathBox.addEventListener("click", () => startEditPath());
+  pathBox.addEventListener("click", () => {
+    if (pathBox.classList.contains("editing")) return;
+    startEditPath(true);
+  });
   input.addEventListener("keydown", (e: KeyboardEvent) => {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -279,6 +346,12 @@ export function mountNavStrip(doc: Document) {
     }
   };
   doc.addEventListener("keydown", keydownHandler);
+  navStripCleanup = () => {
+    try {
+      doc.removeEventListener("keydown", keydownHandler);
+    } catch { }
+    navStripCleanup = null;
+  };
 
   function startEditPath(selectAll = false) {
     pathBox.classList.add("editing");
@@ -315,6 +388,10 @@ function createNavButton(doc: Document, id: string, title: string, glyph: string
 
 export function updateNavStrip(selected?: any) {
   const doc = getDocument();
+  if (!navStripEnabled) {
+    removeNavStrip(doc);
+    return;
+  }
   const strip = doc.getElementById("thiago-nav-strip");
   if (!strip) {
     mountNavStrip(doc);
@@ -329,7 +406,7 @@ export function updateNavStrip(selected?: any) {
     if (idx > 0) {
       const sep = doc.createElement("span");
       sep.className = "thiago-crumb-sep";
-      sep.textContent = "/";
+      sep.textContent = ">";
       crumbs.appendChild(sep);
     }
     const crumb = doc.createElement("span");
@@ -361,6 +438,7 @@ function updateNavButtonsEnabled() {
   const fwdBtn = doc.getElementById("thiago-nav-forward") as HTMLButtonElement | null;
   if (backBtn) backBtn.disabled = !canGo(-1);
   if (fwdBtn) fwdBtn.disabled = !canGo(1);
+  logNav("buttons updated", { backEnabled: !backBtn?.disabled, forwardEnabled: !fwdBtn?.disabled });
 }
 
 export function navigateToCollection(collectionID: number) {
@@ -424,5 +502,28 @@ function expandParentCollections(collectionID: number) {
     }
   } catch (e) {
     ztoolkit.log(`expandParentCollections error: ${e}`);
+  }
+}
+
+function removeNavStrip(doc?: Document) {
+  const documentRef = doc ?? (() => {
+    try {
+      return getDocument();
+    } catch {
+      return null;
+    }
+  })();
+  if (!documentRef) return;
+  const strip = documentRef.getElementById("thiago-nav-strip");
+  if (strip) {
+    try {
+      strip.remove();
+    } catch { }
+  }
+  if (navStripCleanup) {
+    try {
+      navStripCleanup();
+    } catch { }
+    navStripCleanup = null;
   }
 }
