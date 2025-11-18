@@ -1,3 +1,8 @@
+/**
+ * Renders faux "folder rows" above Zotero's items list so navigating collections
+ * feels similar to a filesystem explorer. Responsible for DOM injection,
+ * keyboard/mouse handling, resize sync, and scroll compensation.
+ */
 import { ensureGlobalStyles, getDocument, getPane } from "../env";
 import { navigateToCollection, pushToHistory, updateNavStrip } from "../navigation";
 
@@ -28,6 +33,7 @@ let extraTopOffset = 0;
 let extraTopOffsetMeasureHandle: number | null = null;
 let scrollCompensationState: ScrollCompensationState | null = null;
 
+/** Exposes which collection ID the injected rows currently represent. */
 export function getLastRenderedCollectionID() {
   return lastRenderedCollectionID;
 }
@@ -35,12 +41,17 @@ export function getLastRenderedCollectionID() {
 type RerenderTrigger = (delay?: number) => void;
 let rerenderTrigger: RerenderTrigger = () => { };
 
+/** Allows the controller to override the debounced rerender entry point. */
 export function setRerenderTrigger(trigger: RerenderTrigger) {
   rerenderTrigger = trigger;
 }
 
 // ========== UTILS ==========
 
+/**
+ * Schedules a callback for the next animation frame in the Zotero window,
+ * falling back to `setTimeout` when the host API is unavailable.
+ */
 export function requestNextFrame(cb: FrameRequestCallback): number {
   try {
     const win = Zotero.getMainWindow();
@@ -51,6 +62,7 @@ export function requestNextFrame(cb: FrameRequestCallback): number {
   return setTimeout(() => cb(Date.now()), 16) as unknown as number;
 }
 
+/** Mirrors `requestNextFrame` by clearing via native RAF or `clearTimeout`. */
 export function cancelFrame(handle: number) {
   try {
     const win = Zotero.getMainWindow();
@@ -64,6 +76,10 @@ export function cancelFrame(handle: number) {
 
 // ========== RENDER (FOLDER ROWS ONLY) ==========
 
+/**
+ * Public entry point: clears previous UI and rebuilds folder rows for
+ * whichever collection Zotero currently has selected.
+ */
 export function renderFolderRowsForCurrentCollection() {
   const pane = getPane();
   if (!pane?.itemsView?.domEl) return;
@@ -94,6 +110,10 @@ export function renderFolderRowsForCurrentCollection() {
  * - Find items body (rowgroup)
  * - Prepend our container
  * - Align via CSS grid to header widths
+ */
+/**
+ * Injects folder rows into the scrollable items body, sizing each column to match
+ * the native header cells and optionally resetting the scroll position.
  */
 function renderFolderRows(subcollections: any[], options?: { resetScroll?: boolean }) {
   const resetScroll = !!options?.resetScroll;
@@ -988,6 +1008,7 @@ function attachHeaderObservers(headerRow: HTMLElement | null, onChange: () => vo
   });
 }
 
+/** Disconnects ResizeObserver/MutationObserver watching the items header. */
 export function detachHeaderObservers() {
   if (headerResizeObserver) {
     try { headerResizeObserver.disconnect(); } catch { }
@@ -1001,6 +1022,10 @@ export function detachHeaderObservers() {
 
 // ========== BODY LOOKUP / CLEANUP ==========
 
+/**
+ * Locates the scrollable container that holds Zotero's item rows.
+ * Falls back through heuristics because the host DOM differs per version/theme.
+ */
 function findItemsBody(root: HTMLElement): HTMLElement | null {
   let body = root.querySelector<HTMLElement>(
     '[role="rowgroup"].body, .virtualized-table-body, [data-role="items-body"]'
@@ -1050,6 +1075,9 @@ function findItemsBody(root: HTMLElement): HTMLElement | null {
   return null;
 }
 
+/**
+ * Removes every injected row and associated listeners/timers so the UI can rebuild cleanly.
+ */
 export function removeFolderRows() {
   folderRows.forEach((row) => {
     try {

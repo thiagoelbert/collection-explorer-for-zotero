@@ -1,13 +1,24 @@
+/**
+ * Convenience wrapper that returns Zotero's main window document,
+ * throwing early if the UI is not yet ready.
+ */
 export function getDocument(): Document {
   const win = Zotero.getMainWindow();
   if (!win) throw new Error("Main window not available");
   return win.document;
 }
 
+/**
+ * Returns the active Zotero pane so call sites don't have to guard every access.
+ */
 export function getPane(): any {
   return Zotero.getActiveZoteroPane();
 }
 
+/**
+ * Injects a stylesheet containing the shared look-and-feel for our synthetic folder rows.
+ * Only runs once per window (identified by the style element ID).
+ */
 export function ensureGlobalStyles(doc: Document) {
   if (doc.getElementById("thiago-folder-row-style")) return;
   const style = doc.createElement("style");

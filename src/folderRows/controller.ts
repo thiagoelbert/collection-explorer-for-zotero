@@ -1,3 +1,7 @@
+/**
+ * Coordinates folder-row rendering with Zotero events. Watches collection changes,
+ * debounces rerenders, and exposes lifecycle helpers for the addon hooks.
+ */
 import { getDocument, getPane } from "../env";
 import { updateNavStrip } from "../navigation";
 import {
@@ -19,6 +23,7 @@ let rerenderTimer: number | null = null;
 let rafHandle: number | null = null;
 let renderInFlight = false;
 
+/** Clears the last RAF handle so delayed renders don't fire after shutdown. */
 function cancelScheduledFrame() {
   if (rafHandle) {
     cancelFrame(rafHandle);
@@ -26,6 +31,10 @@ function cancelScheduledFrame() {
   }
 }
 
+/**
+ * Monkey patches `collectionsView.selection.select` so we can detect navigations
+ * triggered via keyboard/mouse faster than Zotero's tree events.
+ */
 function patchCollectionSelection(pane?: any) {
   if (collectionSelectionRestore) return;
   try {
@@ -59,6 +68,9 @@ function patchCollectionSelection(pane?: any) {
   }
 }
 
+/**
+ * Attempts to find the collections tree DOM node across multiple Zotero versions.
+ */
 function findCollectionsTreeElement(): HTMLElement | null {
   try {
     const doc = getDocument();
@@ -82,6 +94,7 @@ function findCollectionsTreeElement(): HTMLElement | null {
   }
 }
 
+/** Dumps the currently selected collection plus its immediate children to the log. */
 export function debugCurrentState() {
   try {
     const pane = getPane();
@@ -99,6 +112,10 @@ export function debugCurrentState() {
   }
 }
 
+/**
+ * Primary debounce wrapper; schedules folder-row rendering on a timer and RAF,
+ * collapsing rapid successive collection changes.
+ */
 export function scheduleRerender(delay = 90) {
   if (rerenderTimer) {
     clearTimeout(rerenderTimer);
@@ -128,6 +145,10 @@ export function scheduleRerender(delay = 90) {
 }
 setRerenderTrigger(scheduleRerender);
 
+/**
+ * Hooks into the collections tree (and a polling fallback) so folder rows stay in sync
+ * when Zotero users navigate via mouse, keyboard, or programmatic actions.
+ */
 export function setupCollectionChangeListener() {
   teardownCollectionChangeListener();
 
@@ -164,6 +185,7 @@ export function setupCollectionChangeListener() {
   }, 500);
 }
 
+/** Removes every listener/interval created by `setupCollectionChangeListener`. */
 export function teardownCollectionChangeListener() {
   if (collectionSelectCleanup) {
     try {
@@ -183,6 +205,10 @@ export function teardownCollectionChangeListener() {
   }
 }
 
+/**
+ * Compares Zotero's currently selected collection with the last rendered ID
+ * and triggers a rerender when they diverge.
+ */
 function maybeScheduleRerenderForCollection(delay: number) {
   const pane = getPane();
   if (!pane) return;
@@ -195,6 +221,7 @@ function maybeScheduleRerenderForCollection(delay: number) {
   }
 }
 
+/** Stops timers/observers and clears injected DOM when the addon unloads. */
 export function shutdownFolderRows() {
   removeFolderRows();
   teardownScrollTopCompensation();

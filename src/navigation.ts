@@ -1,18 +1,28 @@
+/**
+ * Central navigation/breadcrumb UI logic for the Zotero items pane.
+ * Handles navigation history, breadcrumb rendering, overflow menus, and
+ * the wiring to move the actual Zotero collection selection around.
+ */
 import { getDocument, getPane } from "./env";
 
 type NavigationDeps = {
   scheduleRerender: (delay?: number) => void;
 };
 
+// Mutable dependency bag so the module stays mostly pure/testable.
 const deps: NavigationDeps = {
   scheduleRerender: () => { },
 };
 
+/**
+ * Allows consumers to supply their own implementations (mostly useful in tests).
+ */
 export function configureNavigation(newDeps: NavigationDeps) {
   deps.scheduleRerender = newDeps.scheduleRerender;
 }
 
 // --- history ---
+// Keeps a lightweight back/forward stack matching Zotero's selection history.
 const NAV_DEBUG = false;
 const navHistory: number[] = [];
 let navIndex = -1;
@@ -22,6 +32,7 @@ let navStripCleanup: (() => void) | null = null;
 let navOverflowMenuCleanup: (() => void) | null = null;
 let navOverflowMenuAnchor: HTMLElement | null = null;
 
+// Debug helper that prints the current history stack when NAV_DEBUG is true.
 function logNav(message: string, extra?: Record<string, unknown>) {
   if (!NAV_DEBUG) return;
   const stack = navHistory.join(">");
@@ -34,14 +45,17 @@ function logNav(message: string, extra?: Record<string, unknown>) {
   }
 }
 
+// Minimal representation of a location in the breadcrumb trail.
 type PathSeg = { label: string; collectionID: number | null };
 
+// Reference to DOM nodes that belong to a breadcrumb entry.
 type BreadcrumbNode = {
   seg: PathSeg;
   crumb: HTMLSpanElement;
   separator: HTMLSpanElement | null;
 };
 
+// Breadcrumb overflow management constants.
 const BREADCRUMB_TAIL_CLAMP_CLASS = "thiago-crumb-tail-clamped";
 const BREADCRUMB_SCROLL_SETTLE_DELAY = 200;
 const BREADCRUMB_RESIZE_RELEASE_TIMEOUT = 1200;
@@ -53,16 +67,20 @@ type BreadcrumbScrollController = {
   timerOwner: Window | null;
   resizeLocked: boolean;
 };
+// Track scroll controllers for each breadcrumb container so we can reuse timers.
 const breadcrumbScrollControllers = new WeakMap<HTMLElement, BreadcrumbScrollController>();
 const breadcrumbControllerElements = new Set<HTMLElement>();
+// Used to temporarily pause expensive overflow calculations while resizing.
 let breadcrumbResizeLockActive = false;
 let breadcrumbResizeUnlockTimer: number | null = null;
 let breadcrumbResizeUnlockTimerOwner: Window | null = null;
 
+/** Whether the UI should be mounted at all. */
 export function isNavStripEnabled() {
   return navStripEnabled;
 }
 
+/** Toggles the nav strip and tears it down when disabled. */
 export function setNavStripEnabled(value: boolean) {
   if (navStripEnabled === value) return;
   navStripEnabled = value;
@@ -73,6 +91,7 @@ export function setNavStripEnabled(value: boolean) {
   }
 }
 
+/** Selects the parent collection of the currently selected node. */
 export function navigateUp() {
   const pane = getPane();
   const cur = pane?.getSelectedCollection();
@@ -81,6 +100,9 @@ export function navigateUp() {
   deps.scheduleRerender(120);
 }
 
+/**
+ * Parses manual input from the breadcrumb path textbox and navigates there if possible.
+ */
 function commitPath(raw: string) {
   const target = resolveCollectionByPath(raw.trim());
   const doc = getDocument();
@@ -92,6 +114,9 @@ function commitPath(raw: string) {
   if (strip?.__stopEditPath) strip.__stopEditPath();
 }
 
+/**
+ * Attempts to resolve a string path (Library\Subcollection) into a Zotero collection.
+ */
 function resolveCollectionByPath(input: string): any | null {
   const parts = input
     .split(/[\\/]/)
@@ -124,6 +149,7 @@ function resolveCollectionByPath(input: string): any | null {
   return found;
 }
 
+/** Builds the breadcrumb segments for the currently selected collection. */
 function getPathSegments(selected: any): PathSeg[] {
   const segs: PathSeg[] = [];
   if (!selected) {
@@ -140,6 +166,7 @@ function getPathSegments(selected: any): PathSeg[] {
   return segs;
 }
 
+/** Returns a printable string representation of the current breadcrumb path. */
 export function getCurrentPathString(): string {
   const sel = getPane()?.getSelectedCollection();
   if (!sel) return "Library";
@@ -147,6 +174,7 @@ export function getCurrentPathString(): string {
   return segs.join("\\");
 }
 
+/** Injects stylesheet rules once so the strip renders correctly in Zotero. */
 function ensureNavStripCSS(doc: Document) {
   if (doc.getElementById("thiago-nav-strip-style")) return;
   const s = doc.createElement("style");
@@ -236,6 +264,10 @@ function ensureNavStripCSS(doc: Document) {
   if (host) host.appendChild(s);
 }
 
+/**
+ * Records a newly visited collection so the back/forward buttons can use it.
+ * Guards against duplicate entries and waits for pending async navigation.
+ */
 export function pushToHistory(id: number | null) {
   if (id == null) return;
   if (
@@ -269,11 +301,13 @@ export function pushToHistory(id: number | null) {
   logNav("push add", { id });
 }
 
+// Quick bounds-check helper for history navigation.
 function canGo(delta: -1 | 1) {
   const i = navIndex + delta;
   return i >= 0 && i < navHistory.length;
 }
 
+/** Moves back/forward in the custom history stack. */
 export function navigateHistory(delta: -1 | 1) {
   if (!canGo(delta)) return;
   navIndex += delta;
@@ -285,6 +319,10 @@ export function navigateHistory(delta: -1 | 1) {
   updateNavButtonsEnabled();
 }
 
+/**
+ * Mounts the toolbar-like navigation strip into the Zotero items pane.
+ * Does nothing if the UI already exists or the pane cannot be resolved.
+ */
 export function mountNavStrip(doc: Document) {
   if (!navStripEnabled) {
     removeNavStrip(doc);
@@ -444,6 +482,7 @@ export function mountNavStrip(doc: Document) {
     navStripCleanup = null;
   };
 
+  // Switches the breadcrumb display into an editable textbox.
   function startEditPath(selectAll = false) {
     closeBreadcrumbOverflowMenu();
     pathBox.classList.add("editing");
@@ -458,6 +497,7 @@ export function mountNavStrip(doc: Document) {
     }
   }
 
+  // Restores the breadcrumb display after editing.
   function stopEditPath() {
     pathBox.classList.remove("editing");
     crumbs.style.display = "flex";
@@ -469,6 +509,7 @@ export function mountNavStrip(doc: Document) {
   updateNavButtonsEnabled();
 }
 
+/** Small helper to standardize nav buttons (back/forward/up). */
 function createNavButton(doc: Document, id: string, title: string, glyph: string) {
   const btn = doc.createElement("button");
   btn.id = id;
@@ -478,6 +519,10 @@ function createNavButton(doc: Document, id: string, title: string, glyph: string
   return btn;
 }
 
+/**
+ * Rebuilds the breadcrumb DOM to reflect the currently selected collection.
+ * Can be invoked with a fake selection for testing.
+ */
 export function updateNavStrip(selected?: any) {
   const doc = getDocument();
   if (!navStripEnabled) {
@@ -536,6 +581,7 @@ export function updateNavStrip(selected?: any) {
   updateNavButtonsEnabled();
 }
 
+/** Enables/disables back/forward buttons depending on available history. */
 function updateNavButtonsEnabled() {
   const doc = getDocument();
   const backBtn = doc.getElementById("thiago-nav-back") as HTMLButtonElement | null;
@@ -545,6 +591,10 @@ function updateNavButtonsEnabled() {
   logNav("buttons updated", { backEnabled: !backBtn?.disabled, forwardEnabled: !fwdBtn?.disabled });
 }
 
+/**
+ * Imperatively moves Zotero's selection to the target collection.
+ * Falls back through multiple internal APIs because the host UI differs by version.
+ */
 export function navigateToCollection(collectionID: number) {
   const pane = getPane();
   if (!pane?.collectionsView) {
@@ -579,6 +629,10 @@ export function navigateToCollection(collectionID: number) {
   }
 }
 
+/**
+ * Ensures every ancestor of the target collection is expanded,
+ * otherwise the later selection cannot find the target row.
+ */
 function expandParentCollections(collectionID: number) {
   const pane = getPane();
   if (!pane?.collectionsView) return;
@@ -609,6 +663,10 @@ function expandParentCollections(collectionID: number) {
   }
 }
 
+/**
+ * Observes relevant layout containers so the strip can resize with the Zotero UI.
+ * Returns a cleanup function that removes observers/listeners.
+ */
 function setupNavStripWidthTracking(doc: Document, strip: HTMLElement) {
   const win = doc.defaultView;
   const schedule = (() => {
@@ -682,6 +740,7 @@ function setupNavStripWidthTracking(doc: Document, strip: HTMLElement) {
   };
 }
 
+/** Applies the current container width to the nav strip element. */
 function updateNavStripWidth(doc: Document, strip?: HTMLElement | null) {
   const nav = strip ?? (doc.getElementById("thiago-nav-strip") as HTMLElement | null);
   if (!nav) return;
@@ -695,6 +754,7 @@ function updateNavStripWidth(doc: Document, strip?: HTMLElement | null) {
   }
 }
 
+/** Finds the bounding rect of the Zotero items pane (or best available fallback). */
 function getNavHostRect(doc: Document): DOMRect | null {
   const itemsPane = doc.getElementById("zotero-items-pane") as HTMLElement | null;
   if (itemsPane) {
@@ -705,6 +765,10 @@ function getNavHostRect(doc: Document): DOMRect | null {
   return fallback?.getBoundingClientRect() ?? null;
 }
 
+/**
+ * Repeatedly measures the breadcrumb row to figure out which crumbs should be hidden.
+ * Called on resize, theme changes, and when the crumb list is rebuilt.
+ */
 function refreshBreadcrumbOverflow(doc: Document) {
   const crumbs = doc.getElementById("thiago-nav-breadcrumbs") as HTMLElement | null;
   if (!crumbs || crumbs.style.display === "none" || !crumbs.isConnected) return;
@@ -721,6 +785,7 @@ function refreshBreadcrumbOverflow(doc: Document) {
   scheduleBreadcrumbOverflowMeasurement(doc, crumbs, nodes, false);
 }
 
+/** Removes the previously inserted ellipsis node before re-measuring overflow. */
 function removeBreadcrumbEllipsis(crumbsEl: HTMLElement) {
   const toRemove = crumbsEl.querySelectorAll(".thiago-crumb-ellipsis, .thiago-crumb-ellipsis-sep");
   toRemove.forEach(el => {
@@ -730,6 +795,7 @@ function removeBreadcrumbEllipsis(crumbsEl: HTMLElement) {
   });
 }
 
+/** Re-hydrates breadcrumb metadata by reading attributes from the DOM. */
 function collectBreadcrumbNodesFromDOM(doc: Document, crumbsEl: HTMLElement): BreadcrumbNode[] {
   const nodes: BreadcrumbNode[] = [];
   let child = crumbsEl.firstElementChild;
@@ -755,12 +821,16 @@ function collectBreadcrumbNodesFromDOM(doc: Document, crumbsEl: HTMLElement): Br
   return nodes;
 }
 
+/** Clears the ellipsis/truncation applied to the last breadcrumb. */
 function clearBreadcrumbTailClamp(node: BreadcrumbNode) {
   node.crumb.classList.remove(BREADCRUMB_TAIL_CLAMP_CLASS);
   node.crumb.style.removeProperty("maxWidth");
   node.crumb.textContent = node.seg.label;
 }
 
+/**
+ * Applies ellipsis/truncation to the deepest breadcrumb node so the tail is always visible.
+ */
 function clampBreadcrumbTail(node: BreadcrumbNode | undefined, crumbsEl: HTMLElement): boolean {
   if (!node) return false;
   const crumb = node.crumb;
@@ -778,6 +848,7 @@ function clampBreadcrumbTail(node: BreadcrumbNode | undefined, crumbsEl: HTMLEle
   return true;
 }
 
+/** Calculates how much width is left for the final breadcrumb after hiding others. */
 function getTailAvailableWidth(crumbsEl: HTMLElement, tail: HTMLElement) {
   const explicitMax = parseFloat(crumbsEl.style.maxWidth || "") || 0;
   const total =
@@ -800,6 +871,7 @@ function getTailAvailableWidth(crumbsEl: HTMLElement, tail: HTMLElement) {
   return available > 0 ? available : 0;
 }
 
+/** Resets scroll state when the breadcrumb UI is rebuilt from scratch. */
 function resetBreadcrumbScroll(crumbsEl: HTMLElement) {
   crumbsEl.scrollLeft = 0;
   const controller = breadcrumbScrollControllers.get(crumbsEl);
@@ -810,6 +882,7 @@ function resetBreadcrumbScroll(crumbsEl: HTMLElement) {
   }
 }
 
+/** Scrolls to the end so the latest crumb remains visible when overflow happens. */
 function scrollBreadcrumbsToEnd(crumbsEl: HTMLElement) {
   const maxScroll =
     crumbsEl.scrollWidth -
@@ -823,6 +896,10 @@ function scrollBreadcrumbsToEnd(crumbsEl: HTMLElement) {
   }
 }
 
+/**
+ * Keeps breadcrumbs scrolled to either the start or the end depending on overflow state.
+ * Uses a timer to avoid fighting with native scrolling during resize.
+ */
 function updateBreadcrumbScrollAlignment(
   crumbsEl: HTMLElement,
   alignEnd: boolean,
@@ -854,6 +931,7 @@ function updateBreadcrumbScrollAlignment(
   }, BREADCRUMB_SCROLL_SETTLE_DELAY);
 }
 
+/** Applies the requested scroll alignment immediately. */
 function applyBreadcrumbScrollState(el: HTMLElement, target: BreadcrumbScrollTarget) {
   if (target === "end") {
     scrollBreadcrumbsToEnd(el);
@@ -862,6 +940,7 @@ function applyBreadcrumbScrollState(el: HTMLElement, target: BreadcrumbScrollTar
   }
 }
 
+/** Lazily creates (and memoizes) controller state for a breadcrumb element. */
 function ensureBreadcrumbScrollController(crumbsEl: HTMLElement): BreadcrumbScrollController {
   let controller = breadcrumbScrollControllers.get(crumbsEl);
   if (!controller) {
@@ -878,6 +957,7 @@ function ensureBreadcrumbScrollController(crumbsEl: HTMLElement): BreadcrumbScro
   return controller;
 }
 
+/** Clears any pending scroll timers tied to a controller. */
 function cancelBreadcrumbScrollTimer(controller: BreadcrumbScrollController) {
   if (controller.timer != null && controller.timerOwner) {
     try {
@@ -888,6 +968,7 @@ function cancelBreadcrumbScrollTimer(controller: BreadcrumbScrollController) {
   controller.timerOwner = null;
 }
 
+/** Helper to iterate over every live breadcrumb controller entry. */
 function forEachBreadcrumbController(
   callback: (crumbsEl: HTMLElement, controller: BreadcrumbScrollController) => void,
 ) {
@@ -902,6 +983,7 @@ function forEachBreadcrumbController(
   });
 }
 
+/** Fully tears down the controller bookkeeping for a breadcrumb element. */
 function disposeBreadcrumbScrollController(crumbsEl: HTMLElement, win?: Window | null) {
   const controller = breadcrumbScrollControllers.get(crumbsEl);
   if (!controller) return;
@@ -914,6 +996,9 @@ function disposeBreadcrumbScrollController(crumbsEl: HTMLElement, win?: Window |
   breadcrumbControllerElements.delete(crumbsEl);
 }
 
+/**
+ * Temporarily suspends scroll adjustments during drag-resizes so the UI feels stable.
+ */
 function beginBreadcrumbResizeHold(win?: Window | null) {
   if (breadcrumbResizeLockActive) return;
   breadcrumbResizeLockActive = true;
@@ -929,6 +1014,7 @@ function beginBreadcrumbResizeHold(win?: Window | null) {
   });
 }
 
+/** Starts a timer that releases the resize lock after interactions stop. */
 function scheduleBreadcrumbResizeRelease(win: Window | null) {
   if (!win) return;
   if (breadcrumbResizeUnlockTimer != null && breadcrumbResizeUnlockTimerOwner) {
@@ -944,6 +1030,7 @@ function scheduleBreadcrumbResizeRelease(win: Window | null) {
   }, BREADCRUMB_RESIZE_RELEASE_TIMEOUT);
 }
 
+/** Cancels the resize lock immediately and reapplies the desired scroll alignment. */
 function endBreadcrumbResizeHold() {
   if (!breadcrumbResizeLockActive) return;
   breadcrumbResizeLockActive = false;
@@ -960,6 +1047,9 @@ function endBreadcrumbResizeHold() {
   });
 }
 
+/**
+ * Defers overflow calculations to the next frame so the layout can settle first.
+ */
 function scheduleBreadcrumbOverflowMeasurement(
   doc: Document,
   crumbsEl: HTMLElement,
@@ -979,6 +1069,9 @@ function scheduleBreadcrumbOverflowMeasurement(
   }
 }
 
+/**
+ * Core layout routine that hides breadcrumbs (or truncates the tail) once space runs out.
+ */
 function applyBreadcrumbOverflow(
   doc: Document,
   crumbsEl: HTMLElement,
@@ -1020,6 +1113,7 @@ function applyBreadcrumbOverflow(
   updateBreadcrumbScrollAlignment(crumbsEl, overflowActive, immediateScroll);
 }
 
+/** Computes how many pixels the breadcrumb row can occupy within the host toolbar. */
 function getBreadcrumbAvailableWidth(doc: Document, crumbsEl: HTMLElement) {
   const hostRect = getNavHostRect(doc);
   if (hostRect) {
@@ -1032,6 +1126,7 @@ function getBreadcrumbAvailableWidth(doc: Document, crumbsEl: HTMLElement) {
   return crumbsEl.clientWidth || crumbsEl.getBoundingClientRect().width || 0;
 }
 
+/** Injects an ellipsis crumb that reveals the hidden path segments. */
 function insertBreadcrumbEllipsis(doc: Document, crumbsEl: HTMLElement, segments: PathSeg[]) {
   if (!segments.length) return;
   const ellipsis = doc.createElement("span");
@@ -1059,6 +1154,7 @@ function insertBreadcrumbEllipsis(doc: Document, crumbsEl: HTMLElement, segments
   crumbsEl.prepend(ellipsis);
 }
 
+/** Opens or closes the menu containing the hidden breadcrumb segments. */
 function toggleBreadcrumbOverflowMenu(target: HTMLElement, segments: PathSeg[]) {
   if (navOverflowMenuAnchor === target) {
     closeBreadcrumbOverflowMenu();
@@ -1067,6 +1163,7 @@ function toggleBreadcrumbOverflowMenu(target: HTMLElement, segments: PathSeg[]) 
   }
 }
 
+/** Renders a floating menu containing every hidden crumb segment. */
 function openBreadcrumbOverflowMenu(target: HTMLElement, segments: PathSeg[]) {
   closeBreadcrumbOverflowMenu();
   const doc = target.ownerDocument;
@@ -1153,6 +1250,7 @@ function openBreadcrumbOverflowMenu(target: HTMLElement, segments: PathSeg[]) {
   target.classList.add("thiago-nav-menu-open");
 }
 
+/** Safely disposes the overflow menu if present. */
 function closeBreadcrumbOverflowMenu() {
   if (navOverflowMenuCleanup) {
     try {
@@ -1163,6 +1261,7 @@ function closeBreadcrumbOverflowMenu() {
   }
 }
 
+/** Removes the nav strip DOM and associated listeners/styles. */
 function removeNavStrip(doc?: Document) {
   const documentRef = doc ?? (() => {
     try {

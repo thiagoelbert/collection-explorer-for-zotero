@@ -8,7 +8,11 @@ import { getString, initLocale } from "./utils/locale";
  * - Only folder-like rows injected at top of the items list.
  * - Debounced re-render on collection changes for stability.
  */
+// Orchestrates addon lifecycle hooks that Zotero calls.
 class Hooks {
+  /**
+   * Entry point for the addon: waits for the UI, wires menu items, boots folder rows.
+   */
   static async onStartup() {
     const ADDON_NAME = "Zotero File Explorer";
     ztoolkit.log("Plugin starting...");
@@ -46,6 +50,9 @@ class Hooks {
     setupCollectionChangeListener();
   }
 
+  /**
+   * Ensures every injected listener/observer is released when the addon unloads.
+   */
   static onShutdown(): void {
     ztoolkit.unregisterAll();
     shutdownFolderRows();
