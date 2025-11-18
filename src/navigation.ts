@@ -42,6 +42,23 @@ type BreadcrumbNode = {
   separator: HTMLSpanElement | null;
 };
 
+const BREADCRUMB_TAIL_CLAMP_CLASS = "thiago-crumb-tail-clamped";
+const BREADCRUMB_SCROLL_SETTLE_DELAY = 200;
+const BREADCRUMB_RESIZE_RELEASE_TIMEOUT = 1200;
+type BreadcrumbScrollTarget = "start" | "end";
+type BreadcrumbScrollController = {
+  target: BreadcrumbScrollTarget;
+  applied: BreadcrumbScrollTarget;
+  timer: number | null;
+  timerOwner: Window | null;
+  resizeLocked: boolean;
+};
+const breadcrumbScrollControllers = new WeakMap<HTMLElement, BreadcrumbScrollController>();
+const breadcrumbControllerElements = new Set<HTMLElement>();
+let breadcrumbResizeLockActive = false;
+let breadcrumbResizeUnlockTimer: number | null = null;
+let breadcrumbResizeUnlockTimerOwner: Window | null = null;
+
 export function isNavStripEnabled() {
   return navStripEnabled;
 }
@@ -152,9 +169,15 @@ function ensureNavStripCSS(doc: Document) {
   #thiago-nav-strip button:hover { background: var(--accent-blue10, rgba(64,114,229,.1)); }
   #thiago-nav-strip button:disabled { opacity:.35; cursor:default; }
   #thiago-nav-path {
-    min-width: 240px; flex:1; display:flex; align-items:center; gap:6px;
+    flex:1 1 240px; min-width:0; display:flex; align-items:center; gap:6px;
     padding:2px 6px; border-radius:6px; background: var(--material-button, #fff); border:1px solid var(--color-border, #dadada);
     overflow:hidden;
+  }
+  #thiago-nav-strip .thiago-nav-flex-spacer {
+    flex:0 0 12px;
+    min-width:12px;
+    height:1px;
+    pointer-events:none;
   }
   #thiago-nav-breadcrumbs {
     display:flex; align-items:center; gap:4px;
@@ -166,6 +189,13 @@ function ensureNavStripCSS(doc: Document) {
   .thiago-crumb {
     display:inline-flex; align-items:center; gap:6px; white-space:nowrap; padding:2px 4px; border-radius:4px; cursor:pointer;
     flex-shrink:0;
+  }
+  .thiago-crumb.${BREADCRUMB_TAIL_CLAMP_CLASS} {
+    flex-shrink:1;
+    min-width:0;
+    max-width:100%;
+    overflow:hidden;
+    text-overflow:ellipsis;
   }
   .thiago-crumb:hover { background: var(--accent-blue10, rgba(64,114,229,.1)); }
   .thiago-crumb.thiago-nav-menu-open { background: var(--accent-blue20, rgba(64,114,229,.2)); }
@@ -295,7 +325,7 @@ export function mountNavStrip(doc: Document) {
 
   const pathBox = doc.createElement("div");
   pathBox.id = "thiago-nav-path";
-  pathBox.style.minWidth = "240px";
+  pathBox.style.minWidth = "0";
   pathBox.style.flex = "1";
   pathBox.style.display = "flex";
   pathBox.style.alignItems = "center";
@@ -329,12 +359,18 @@ export function mountNavStrip(doc: Document) {
   pathRow.style.display = "flex";
   pathRow.style.alignItems = "center";
   pathRow.style.gap = "6px";
-  pathRow.style.width = "100%";
+  pathRow.style.flex = "1 1 auto";
+  pathRow.style.minWidth = "0";
+  pathRow.style.boxSizing = "border-box";
 
   pathBox.append(crumbs, input);
   pathRow.append(pathBox);
 
-  strip.append(buttonsWrap, pathRow);
+  const flexSpacer = doc.createElement("div");
+  flexSpacer.className = "thiago-nav-flex-spacer";
+  flexSpacer.setAttribute("aria-hidden", "true");
+
+  strip.append(buttonsWrap, flexSpacer, pathRow);
   const cleanupTasks: Array<() => void> = [];
 
   const itemsPaneContainer =
@@ -615,9 +651,23 @@ function setupNavStripWidthTracking(doc: Document, strip: HTMLElement) {
   }
 
   if (win) {
-    const handler = () => schedule();
-    win.addEventListener("resize", handler);
-    cleanupFns.push(() => win.removeEventListener("resize", handler));
+    const handleResize = () => {
+      beginBreadcrumbResizeHold(win);
+      schedule();
+      scheduleBreadcrumbResizeRelease(win);
+    };
+    win.addEventListener("resize", handleResize);
+    cleanupFns.push(() => win.removeEventListener("resize", handleResize));
+
+    const releaseResizeHold = () => {
+      if (breadcrumbResizeLockActive) {
+        endBreadcrumbResizeHold();
+      }
+    };
+    ["mouseup", "pointerup", "touchend"].forEach(type => {
+      win.addEventListener(type, releaseResizeHold, true);
+      cleanupFns.push(() => win.removeEventListener(type, releaseResizeHold, true));
+    });
   }
 
   if (!cleanupFns.length) {
@@ -660,13 +710,15 @@ function refreshBreadcrumbOverflow(doc: Document) {
   if (!crumbs || crumbs.style.display === "none" || !crumbs.isConnected) return;
   closeBreadcrumbOverflowMenu();
   removeBreadcrumbEllipsis(crumbs);
+  resetBreadcrumbScroll(crumbs);
   const nodes = collectBreadcrumbNodesFromDOM(doc, crumbs);
   if (!nodes.length) return;
   nodes.forEach(node => {
     node.crumb.style.display = "";
     if (node.separator) node.separator.style.display = "";
+    clearBreadcrumbTailClamp(node);
   });
-  scheduleBreadcrumbOverflowMeasurement(doc, crumbs, nodes);
+  scheduleBreadcrumbOverflowMeasurement(doc, crumbs, nodes, false);
 }
 
 function removeBreadcrumbEllipsis(crumbsEl: HTMLElement) {
@@ -703,15 +755,221 @@ function collectBreadcrumbNodesFromDOM(doc: Document, crumbsEl: HTMLElement): Br
   return nodes;
 }
 
+function clearBreadcrumbTailClamp(node: BreadcrumbNode) {
+  node.crumb.classList.remove(BREADCRUMB_TAIL_CLAMP_CLASS);
+  node.crumb.style.removeProperty("maxWidth");
+  node.crumb.textContent = node.seg.label;
+}
+
+function clampBreadcrumbTail(node: BreadcrumbNode | undefined, crumbsEl: HTMLElement): boolean {
+  if (!node) return false;
+  const crumb = node.crumb;
+  const available = getTailAvailableWidth(crumbsEl, crumb);
+  if (!available) return false;
+  const label = node.seg.label;
+  crumb.textContent = label;
+  crumb.classList.add(BREADCRUMB_TAIL_CLAMP_CLASS);
+  crumb.style.maxWidth = `${Math.floor(available)}px`;
+  if (crumb.scrollWidth <= crumb.clientWidth + 1) return true;
+  for (let idx = 1; idx < label.length; idx++) {
+    crumb.textContent = `\u2026${label.slice(idx)}`;
+    if (crumb.scrollWidth <= crumb.clientWidth + 1) return true;
+  }
+  return true;
+}
+
+function getTailAvailableWidth(crumbsEl: HTMLElement, tail: HTMLElement) {
+  const explicitMax = parseFloat(crumbsEl.style.maxWidth || "") || 0;
+  const total =
+    crumbsEl.clientWidth ||
+    crumbsEl.getBoundingClientRect().width ||
+    explicitMax ||
+    0;
+  if (!total) return 0;
+  const doc = tail.ownerDocument;
+  const win = doc?.defaultView;
+  let occupied = 0;
+  const children = Array.from(crumbsEl.children) as HTMLElement[];
+  children.forEach(child => {
+    if (child === tail) return;
+    const display = win?.getComputedStyle?.(child).display ?? "";
+    if (display === "none") return;
+    occupied += child.getBoundingClientRect().width;
+  });
+  const available = total - occupied - 4;
+  return available > 0 ? available : 0;
+}
+
+function resetBreadcrumbScroll(crumbsEl: HTMLElement) {
+  crumbsEl.scrollLeft = 0;
+  const controller = breadcrumbScrollControllers.get(crumbsEl);
+  if (controller) {
+    cancelBreadcrumbScrollTimer(controller);
+    controller.target = "start";
+    controller.applied = "start";
+  }
+}
+
+function scrollBreadcrumbsToEnd(crumbsEl: HTMLElement) {
+  const maxScroll =
+    crumbsEl.scrollWidth -
+    (crumbsEl.clientWidth || crumbsEl.getBoundingClientRect().width || 0);
+  crumbsEl.scrollLeft = maxScroll > 0 ? maxScroll : 0;
+  const controller = breadcrumbScrollControllers.get(crumbsEl);
+  if (controller) {
+    cancelBreadcrumbScrollTimer(controller);
+    controller.target = "end";
+    controller.applied = "end";
+  }
+}
+
+function updateBreadcrumbScrollAlignment(
+  crumbsEl: HTMLElement,
+  alignEnd: boolean,
+  immediate: boolean,
+) {
+  const controller = ensureBreadcrumbScrollController(crumbsEl);
+  controller.target = alignEnd ? "end" : "start";
+  if (controller.resizeLocked && !immediate) {
+    return;
+  }
+  const win = crumbsEl.ownerDocument?.defaultView ?? controller.timerOwner ?? null;
+  cancelBreadcrumbScrollTimer(controller);
+  const apply = () => {
+    applyBreadcrumbScrollState(crumbsEl, controller.target);
+    controller.applied = controller.target;
+  };
+  if (immediate || !win) {
+    apply();
+    return;
+  }
+  if (controller.applied === controller.target) {
+    return;
+  }
+  controller.timerOwner = win;
+  controller.timer = win.setTimeout(() => {
+    controller.timer = null;
+    controller.timerOwner = null;
+    apply();
+  }, BREADCRUMB_SCROLL_SETTLE_DELAY);
+}
+
+function applyBreadcrumbScrollState(el: HTMLElement, target: BreadcrumbScrollTarget) {
+  if (target === "end") {
+    scrollBreadcrumbsToEnd(el);
+  } else {
+    resetBreadcrumbScroll(el);
+  }
+}
+
+function ensureBreadcrumbScrollController(crumbsEl: HTMLElement): BreadcrumbScrollController {
+  let controller = breadcrumbScrollControllers.get(crumbsEl);
+  if (!controller) {
+    controller = {
+      target: "start",
+      applied: "start",
+      timer: null,
+      timerOwner: null,
+      resizeLocked: false,
+    };
+    breadcrumbScrollControllers.set(crumbsEl, controller);
+    breadcrumbControllerElements.add(crumbsEl);
+  }
+  return controller;
+}
+
+function cancelBreadcrumbScrollTimer(controller: BreadcrumbScrollController) {
+  if (controller.timer != null && controller.timerOwner) {
+    try {
+      controller.timerOwner.clearTimeout(controller.timer);
+    } catch { }
+  }
+  controller.timer = null;
+  controller.timerOwner = null;
+}
+
+function forEachBreadcrumbController(
+  callback: (crumbsEl: HTMLElement, controller: BreadcrumbScrollController) => void,
+) {
+  breadcrumbControllerElements.forEach(el => {
+    const controller = breadcrumbScrollControllers.get(el);
+    if (!controller || !el.isConnected) {
+      breadcrumbControllerElements.delete(el);
+      breadcrumbScrollControllers.delete(el);
+      return;
+    }
+    callback(el, controller);
+  });
+}
+
+function disposeBreadcrumbScrollController(crumbsEl: HTMLElement, win?: Window | null) {
+  const controller = breadcrumbScrollControllers.get(crumbsEl);
+  if (!controller) return;
+  if (controller.timer != null && (win ?? controller.timerOwner)) {
+    try {
+      (win ?? controller.timerOwner)?.clearTimeout(controller.timer);
+    } catch { }
+  }
+  breadcrumbScrollControllers.delete(crumbsEl);
+  breadcrumbControllerElements.delete(crumbsEl);
+}
+
+function beginBreadcrumbResizeHold(win?: Window | null) {
+  if (breadcrumbResizeLockActive) return;
+  breadcrumbResizeLockActive = true;
+  if (breadcrumbResizeUnlockTimer != null && (win ?? breadcrumbResizeUnlockTimerOwner)) {
+    try {
+      (win ?? breadcrumbResizeUnlockTimerOwner)?.clearTimeout(breadcrumbResizeUnlockTimer);
+    } catch { }
+    breadcrumbResizeUnlockTimer = null;
+    breadcrumbResizeUnlockTimerOwner = null;
+  }
+  forEachBreadcrumbController((_, controller) => {
+    controller.resizeLocked = true;
+  });
+}
+
+function scheduleBreadcrumbResizeRelease(win: Window | null) {
+  if (!win) return;
+  if (breadcrumbResizeUnlockTimer != null && breadcrumbResizeUnlockTimerOwner) {
+    try {
+      breadcrumbResizeUnlockTimerOwner.clearTimeout(breadcrumbResizeUnlockTimer);
+    } catch { }
+  }
+  breadcrumbResizeUnlockTimerOwner = win;
+  breadcrumbResizeUnlockTimer = win.setTimeout(() => {
+    breadcrumbResizeUnlockTimer = null;
+    breadcrumbResizeUnlockTimerOwner = null;
+    endBreadcrumbResizeHold();
+  }, BREADCRUMB_RESIZE_RELEASE_TIMEOUT);
+}
+
+function endBreadcrumbResizeHold() {
+  if (!breadcrumbResizeLockActive) return;
+  breadcrumbResizeLockActive = false;
+  if (breadcrumbResizeUnlockTimer != null && breadcrumbResizeUnlockTimerOwner) {
+    try {
+      breadcrumbResizeUnlockTimerOwner.clearTimeout(breadcrumbResizeUnlockTimer);
+    } catch { }
+    breadcrumbResizeUnlockTimer = null;
+    breadcrumbResizeUnlockTimerOwner = null;
+  }
+  forEachBreadcrumbController((crumbsEl, controller) => {
+    controller.resizeLocked = false;
+    updateBreadcrumbScrollAlignment(crumbsEl, controller.target === "end", true);
+  });
+}
+
 function scheduleBreadcrumbOverflowMeasurement(
   doc: Document,
   crumbsEl: HTMLElement,
   nodes: BreadcrumbNode[],
+  immediateScroll = true,
 ) {
   if (!nodes.length) return;
   const runner = () => {
     if (!crumbsEl.isConnected) return;
-    applyBreadcrumbOverflow(doc, crumbsEl, nodes);
+    applyBreadcrumbOverflow(doc, crumbsEl, nodes, { immediateScroll });
   };
   const win = doc.defaultView;
   if (win?.requestAnimationFrame) {
@@ -725,16 +983,23 @@ function applyBreadcrumbOverflow(
   doc: Document,
   crumbsEl: HTMLElement,
   nodes: BreadcrumbNode[],
+  options?: { immediateScroll?: boolean },
 ) {
+  const immediateScroll = options?.immediateScroll ?? true;
   const containerWidth = getBreadcrumbAvailableWidth(doc, crumbsEl);
   if (!containerWidth) {
     crumbsEl.style.maxWidth = "";
+    updateBreadcrumbScrollAlignment(crumbsEl, false, true);
     return;
   }
   crumbsEl.style.maxWidth = `${containerWidth}px`;
   const hidden: BreadcrumbNode[] = [];
   const isOverflowing = () => crumbsEl.scrollWidth > containerWidth + 1;
-  if (!isOverflowing()) return;
+  if (!isOverflowing()) {
+    updateBreadcrumbScrollAlignment(crumbsEl, false, true);
+    return;
+  }
+  let overflowActive = false;
   for (let i = 0; i < nodes.length - 1 && isOverflowing(); i++) {
     const node = nodes[i];
     hidden.push(node);
@@ -743,8 +1008,16 @@ function applyBreadcrumbOverflow(
     const next = nodes[i + 1];
     if (next?.separator) next.separator.style.display = "none";
   }
-  if (!hidden.length) return;
-  insertBreadcrumbEllipsis(doc, crumbsEl, hidden.map(n => n.seg));
+  if (hidden.length) {
+    insertBreadcrumbEllipsis(doc, crumbsEl, hidden.map(n => n.seg));
+    overflowActive = true;
+  }
+  if (isOverflowing()) {
+    if (clampBreadcrumbTail(nodes[nodes.length - 1], crumbsEl)) {
+      overflowActive = true;
+    }
+  }
+  updateBreadcrumbScrollAlignment(crumbsEl, overflowActive, immediateScroll);
 }
 
 function getBreadcrumbAvailableWidth(doc: Document, crumbsEl: HTMLElement) {
@@ -900,11 +1173,15 @@ function removeNavStrip(doc?: Document) {
   })();
   if (!documentRef) return;
   closeBreadcrumbOverflowMenu();
+  const crumbs = documentRef.getElementById("thiago-nav-breadcrumbs") as HTMLElement | null;
   const strip = documentRef.getElementById("thiago-nav-strip");
   if (strip) {
     try {
       strip.remove();
     } catch { }
+  }
+  if (crumbs) {
+    disposeBreadcrumbScrollController(crumbs, documentRef.defaultView);
   }
   if (navStripCleanup) {
     try {
