@@ -1,10 +1,10 @@
 {
-  "name": "zotero-file-explorer",
+  "name": "collection-explorer-for-zotero",
   "type": "module",
   "version": "1.0.0",
   "description": "Show subcollections as folder-like rows at the top of the items list, for Explorer-style navigation.",
   "config": {
-    "addonName": "Zotero File Explorer",
+    "addonName": "Collection Explorer for Zotero",
     "addonID": "zotero-file-explorer@thiago",
     "addonRef": "zoteroFileExplorer",
     "addonInstance": "ZoteroFileExplorer",

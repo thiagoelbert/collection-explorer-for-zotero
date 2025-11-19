@@ -1,23 +1,21 @@
-# Zotero File Explorer
+# Collection Explorer for Zotero
 
-[![Zotero 7](https://img.shields.io/badge/Zotero-7.0%2B-green?style=flat-square&logo=zotero&logoColor=CC2936)](https://www.zotero.org)  
-[![TypeScript](https://img.shields.io/badge/TypeScript-✓-blue?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)  
-[![Template](https://img.shields.io/badge/Built%20with-Zotero%20Plugin%20Template-blue?style=flat-square&logo=github)](https://github.com/windingwind/zotero-plugin-template)
+[![Zotero 7](https://img.shields.io/badge/Zotero-7.0%2B-green?style=flat-square&logo=zotero&logoColor=CC2936)](https://www.zotero.org)  [![TypeScript](https://img.shields.io/badge/TypeScript-✓-blue?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)  [![Template](https://img.shields.io/badge/Built%20with-Zotero%20Plugin%20Template-blue?style=flat-square&logo=github)](https://github.com/windingwind/zotero-plugin-template)
 
-**Zotero File Explorer** turns Zotero’s Items pane into an Explorer-style navigator:  
+**Collection Explorer for Zotero** turns Zotero’s Items pane into an Explorer-style navigator:  
 whenever you open a collection, its **subcollections appear as folder-like rows** at the top of the items list—just like folders at the top of a filesystem.
 
 ---
 
 ## ⚠️ A note from the author
 
-I (Thiago) am **not a developer** and had **no previous experience with TypeScript, Zotero, UI code, or plugin architecture**.  
-This entire plugin was built through **incremental guidance from large-language models (LLMs)**.
+I am **not a developer** and had **no previous experience with TypeScript, Zotero, UI code, or plugin architecture**.  
+This entire plugin was built through **incremental guidance from LLM assistants**.
 
 I am sharing this because:
 
 - the plugin is useful,
-- the approach may encourage others to help building it
+- others may help to build it
 
 **Please treat this addon as experimental.**  
 If you find bugs or want to improve the code, PRs are extremely welcome.
