@@ -245,17 +245,7 @@ function buildFolderRow(subCol: any): HTMLElement {
       name.textContent = subCol.name;
       name.style.fontWeight = "600";
 
-      const countSpan = doc.createElement("span");
-      try {
-        const children = Zotero.Collections.getByParent(subCol.id) || [];
-        if (children.length) {
-          countSpan.textContent = `(${children.length} sub)`;
-          countSpan.style.cssText =
-            "font-weight:400;color:#666;margin-left:6px;";
-        }
-      } catch (_err) { /* ignored */ }
-
-      cell.append(icon, name, countSpan);
+      cell.append(icon, name);
     } else {
       cell.textContent = "";
     }
@@ -1090,4 +1080,3 @@ export function removeFolderRows() {
   setExtraTopOffset(0);
   updateZebraFlipFlag();
 }
-
