@@ -1,24 +1,24 @@
 {
   "name": "collection-explorer-for-zotero",
   "type": "module",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Show subcollections as folder-like rows at the top of the items list, for Explorer-style navigation.",
   "config": {
     "addonName": "Collection Explorer for Zotero",
-    "addonID": "zotero-file-explorer@thiago",
-    "addonRef": "zoteroFileExplorer",
-    "addonInstance": "ZoteroFileExplorer",
-    "prefsPrefix": "extensions.zotero.zoteroFileExplorer"
+    "addonID": "collection-explorer@thiago",
+    "addonRef": "CollectionExplorer",
+    "addonInstance": "CollectionExplorer",
+    "prefsPrefix": "extensions.zotero.CollectionExplorer"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/thiagoelbert/zotero-file-explorer.git"
+    "url": "git+https://github.com/thiagoelbert/collection-explorer-for-zotero.git"
   },
   "author": "Thiago Elbert",
   "bugs": {
     "url": "https://github.com/thiagoelbert/zotero-file-explorer/issues"
   },
-  "homepage": "https://github.com/thiagoelbert/zotero-file-explorer#readme",
+  "homepage": "https://github.com/thiagoelbert/collection-explorer-for-zotero#readme",
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "start": "zotero-plugin serve",

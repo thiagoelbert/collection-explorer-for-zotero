@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Collection Explorer for Zotero",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Show subcollections as folder-like rows at the top of the items list, for Explorer-style navigation.",
   "homepage_url": "https://github.com/yourname/zotero-file-explorer",
   "author": "thiagoelbert",
