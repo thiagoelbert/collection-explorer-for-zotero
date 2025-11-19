@@ -46,6 +46,87 @@ export function setRerenderTrigger(trigger: RerenderTrigger) {
   rerenderTrigger = trigger;
 }
 
+const LIBRARY_CONTEXT_SENTINEL_OFFSET = 1000000;
+
+function encodeLibraryContextID(libraryID: number) {
+  return -(LIBRARY_CONTEXT_SENTINEL_OFFSET + libraryID);
+}
+
+function getSelectedTreeRow(pane?: any): Zotero.CollectionTreeRow | null {
+  try {
+    const cacheRow = Zotero.CollectionTreeCache?.lastTreeRow;
+    if (cacheRow) return cacheRow;
+  } catch (_err) {
+    // ignored
+  }
+  try {
+    const targetPane = pane || getPane();
+    const tree = targetPane?.collectionsView as _ZoteroTypes.CollectionTree | undefined;
+    const selection = tree?.selection;
+    const index =
+      typeof selection?.currentIndex === "number" ? selection.currentIndex : -1;
+    if (!tree || index == null || index < 0) return null;
+    if (typeof tree.getRow === "function") {
+      return tree.getRow(index) as Zotero.CollectionTreeRow;
+    }
+    const rows: any[] | undefined = (tree as any)?._rows;
+    if (Array.isArray(rows) && index >= 0 && index < rows.length) {
+      return rows[index] as Zotero.CollectionTreeRow;
+    }
+  } catch (_err) {
+    // ignored
+  }
+  return null;
+}
+
+function getTreeRowLibraryID(row: Zotero.CollectionTreeRow | null): number | null {
+  if (!row) return null;
+  try {
+    const ref: any = (row as any).ref;
+    if (typeof ref?.libraryID === "number") return ref.libraryID;
+    if (typeof ref?.library?.libraryID === "number") return ref.library.libraryID;
+    if (typeof (row as any).libraryID === "number") return (row as any).libraryID;
+  } catch (_err) {
+    return null;
+  }
+  return null;
+}
+
+function getActiveLibraryID(
+  pane: any,
+  selected: any,
+  row: Zotero.CollectionTreeRow | null,
+): number | null {
+  if (selected?.libraryID) return selected.libraryID;
+  return (
+    getTreeRowLibraryID(row) ??
+    pane?.getSelectedLibraryID?.() ??
+    Zotero.Libraries?.userLibraryID ??
+    null
+  );
+}
+
+function computeSelectionContextID(
+  pane: any,
+  selected: any,
+  row: Zotero.CollectionTreeRow | null,
+): number | null {
+  if (selected?.id) return selected.id;
+  const libraryID = getActiveLibraryID(pane, selected, row);
+  if (row?.isLibrary?.() && libraryID != null) {
+    return encodeLibraryContextID(libraryID);
+  }
+  return null;
+}
+
+export function getCurrentSelectionKey(): number | null {
+  const pane = getPane();
+  if (!pane) return null;
+  const selected = pane.getSelectedCollection?.();
+  const row = getSelectedTreeRow(pane);
+  return computeSelectionContextID(pane, selected, row);
+}
+
 // ========== UTILS ==========
 
 /**
@@ -85,20 +166,33 @@ export function renderFolderRowsForCurrentCollection() {
   if (!pane?.itemsView?.domEl) return;
 
   const selected = pane.getSelectedCollection();
+  const treeRow = getSelectedTreeRow(pane);
   const previousCollectionID = lastRenderedCollectionID;
-  lastRenderedCollectionID = selected?.id || null;
+  lastRenderedCollectionID = computeSelectionContextID(pane, selected, treeRow);
 
   // Tear down previous UI
   removeFolderRows();
   detachHeaderObservers();
 
-  if (!selected) return;
-
-  if (selected?.id) pushToHistory(selected.id);
   updateNavStrip(selected);
 
+  const isLibraryRow =
+    !selected &&
+    !!treeRow &&
+    (typeof treeRow.isLibrary === "function"
+      ? treeRow.isLibrary()
+      : ((treeRow as any)?.type === "library"));
+  const libraryID = getActiveLibraryID(pane, selected, treeRow);
 
-  const subcollections = Zotero.Collections.getByParent(selected.id);
+  if (!selected && (!isLibraryRow || libraryID == null)) {
+    return;
+  }
+
+  if (selected?.id) pushToHistory(selected.id);
+
+  const subcollections = selected
+    ? Zotero.Collections.getByParent(selected.id)
+    : Zotero.Collections.getByLibrary(libraryID!).filter((c: any) => !c.parentID);
   const shouldResetScroll = previousCollectionID !== lastRenderedCollectionID;
 
   renderFolderRows(subcollections, { resetScroll: shouldResetScroll });

@@ -5,6 +5,8 @@
  */
 import { getDocument, getPane } from "./env";
 
+type CollectionTreeRowType = _ZoteroTypes.CollectionTreeRow.Type;
+
 type NavigationDeps = {
   scheduleRerender: (delay?: number) => void;
 };
@@ -32,7 +34,12 @@ let navOverflowMenuCleanup: (() => void) | null = null;
 let navOverflowMenuAnchor: HTMLElement | null = null;
 
 // Minimal representation of a location in the breadcrumb trail.
-type PathSeg = { label: string; collectionID: number | null };
+type PathSeg = {
+  label: string;
+  collectionID: number | null;
+  libraryID: number | null;
+  rowType: CollectionTreeRowType | null;
+};
 
 // Reference to DOM nodes that belong to a breadcrumb entry.
 type BreadcrumbNode = {
@@ -45,6 +52,32 @@ type BreadcrumbNode = {
 const BREADCRUMB_TAIL_CLAMP_CLASS = "zfe-crumb-tail-clamped";
 const BREADCRUMB_SCROLL_SETTLE_DELAY = 200;
 const BREADCRUMB_RESIZE_RELEASE_TIMEOUT = 1200;
+const NAV_STRIP_SUPPRESSED_ROW_TYPES = new Set<CollectionTreeRowType>([
+  "duplicates",
+  "publications",
+  "trash",
+  "unfiled",
+  "retracted",
+  "feeds",
+  "feed",
+  "search",
+  "bucket",
+  "share",
+]);
+const ROW_TYPE_DETECTORS: Array<[CollectionTreeRowType, string]> = [
+  ["library", "isLibrary"],
+  ["group", "isGroup"],
+  ["feed", "isFeed"],
+  ["collection", "isCollection"],
+  ["search", "isSearch"],
+  ["duplicates", "isDuplicates"],
+  ["unfiled", "isUnfiled"],
+  ["retracted", "isRetracted"],
+  ["publications", "isPublications"],
+  ["trash", "isTrash"],
+  ["bucket", "isBucket"],
+  ["share", "isShare"],
+];
 type BreadcrumbScrollTarget = "start" | "end";
 type BreadcrumbScrollController = {
   target: BreadcrumbScrollTarget;
@@ -81,9 +114,15 @@ export function setNavStripEnabled(value: boolean) {
 export function navigateUp() {
   const pane = getPane();
   const cur = pane?.getSelectedCollection();
-  if (!cur?.parentID) return;
-  navigateToCollection(cur.parentID);
-  deps.scheduleRerender(120);
+  if (cur?.parentID) {
+    navigateToCollection(cur.parentID);
+    deps.scheduleRerender(120);
+    return;
+  }
+  const targetLibID = cur?.libraryID ?? pane?.getSelectedLibraryID?.() ?? null;
+  if (navigateToLibraryRoot(targetLibID ?? null)) {
+    deps.scheduleRerender(120);
+  }
 }
 
 /**
@@ -135,20 +174,154 @@ function resolveCollectionByPath(input: string): any | null {
   return found;
 }
 
-/** Builds the breadcrumb segments for the currently selected collection. */
-function getPathSegments(selected: any): PathSeg[] {
-  const segs: PathSeg[] = [];
-  if (!selected) {
-    return [{ label: "Library", collectionID: null }];
-  }
-  const lib = Zotero.Libraries.get(selected.libraryID);
-  const libName = (lib as any)?.name || "Library";
-  segs.push({ label: libName, collectionID: null });
+type ActiveLibraryMeta = { id: number | null; name: string };
 
+/** Returns the currently selected tree row when available. */
+function getSelectedTreeRow(): Zotero.CollectionTreeRow | null {
+  try {
+    const cached = Zotero.CollectionTreeCache?.lastTreeRow;
+    if (cached) return cached;
+  } catch (_err) {
+    // ignored
+  }
+  try {
+    const pane = getPane();
+    const tree = pane?.collectionsView as _ZoteroTypes.CollectionTree | undefined;
+    const selection = tree?.selection;
+    const index =
+      typeof selection?.currentIndex === "number" ? selection.currentIndex : -1;
+    if (!tree || index == null || index < 0) return null;
+    return getTreeRowAtIndex(tree, index);
+  } catch (_err) {
+    return null;
+  }
+}
+
+/** Attempts to infer the row type using explicit metadata or helper predicates. */
+function getTreeRowType(row: Zotero.CollectionTreeRow | null): CollectionTreeRowType | null {
+  if (!row) return null;
+  const direct = (row as any)?.type;
+  if (direct && typeof direct === "string") {
+    return direct as CollectionTreeRowType;
+  }
+  for (const [type, method] of ROW_TYPE_DETECTORS) {
+    const fn = (row as any)?.[method];
+    if (typeof fn === "function") {
+      try {
+        if (fn.call(row)) return type;
+      } catch (_err) {
+        // Ignore detector failures.
+      }
+    }
+  }
+  return null;
+}
+
+/** Returns the library ID associated with a tree row if possible. */
+function getRowLibraryID(row: Zotero.CollectionTreeRow | null): number | null {
+  if (!row) return null;
+  try {
+    const ref: any = (row as any).ref;
+    if (typeof ref?.libraryID === "number") return ref.libraryID;
+    if (typeof ref?.library?.libraryID === "number") return ref.library.libraryID;
+    if (typeof (row as any).libraryID === "number") return (row as any).libraryID;
+  } catch (_err) {
+    return null;
+  }
+  return null;
+}
+
+/** Resolves the most relevant library metadata for the breadcrumb root. */
+function getActiveLibraryMeta(
+  selected: any,
+  row: Zotero.CollectionTreeRow | null,
+): ActiveLibraryMeta {
+  const pane = getPane();
+  const inferredID =
+    selected?.libraryID ??
+    getRowLibraryID(row) ??
+    pane?.getSelectedLibraryID?.() ??
+    Zotero.Libraries?.userLibraryID ??
+    null;
+  const lib = inferredID != null ? Zotero.Libraries.get(inferredID) : null;
+  const name = (lib as any)?.name || "Library";
+  return { id: inferredID, name };
+}
+
+/** Returns the display label for a tree row or an empty string. */
+function getRowDisplayName(row: Zotero.CollectionTreeRow | null): string {
+  if (!row) return "";
+  try {
+    if (typeof row.getName === "function") {
+      const name = row.getName();
+      if (typeof name === "string" && name.trim()) return name;
+    }
+  } catch (_err) {
+    // Fallback to trying direct properties below.
+  }
+  const ref: any = (row as any)?.ref;
+  const label = ref?.name ?? ref?.label ?? ref?.title ?? "";
+  return typeof label === "string" ? label : "";
+}
+
+/** Best-effort accessor for a tree row at a given index across Zotero versions. */
+function getTreeRowAtIndex(
+  tree: _ZoteroTypes.CollectionTree | any,
+  index: number,
+): Zotero.CollectionTreeRow | null {
+  if (!tree || index == null || index < 0) return null;
+  if (typeof tree.getRow === "function") {
+    try {
+      return tree.getRow(index) as Zotero.CollectionTreeRow;
+    } catch (_err) {
+      // Fall through to private row array if direct accessor throws.
+    }
+  }
+  const rows: any[] | undefined = (tree as any)?._rows;
+  if (Array.isArray(rows) && index >= 0 && index < rows.length) {
+    return rows[index] as Zotero.CollectionTreeRow;
+  }
+  return null;
+}
+
+/** Builds the breadcrumb segments for the currently selected collection. */
+function getPathSegments(selected: any, treeRowOverride?: Zotero.CollectionTreeRow | null): PathSeg[] {
+  const segs: PathSeg[] = [];
+  const treeRow = treeRowOverride ?? getSelectedTreeRow();
+  const libraryMeta = getActiveLibraryMeta(selected, treeRow);
+  segs.push({
+    label: libraryMeta.name,
+    collectionID: null,
+    libraryID: libraryMeta.id,
+    rowType: "library",
+  });
+  if (!selected) {
+    if (treeRow && !treeRow.isLibrary?.()) {
+      const rowLabel = getRowDisplayName(treeRow);
+      if (rowLabel) {
+        const maybeCollectionID =
+          treeRow.isCollection?.() && typeof (treeRow as any)?.ref?.id === "number"
+            ? Number((treeRow as any).ref.id)
+            : null;
+        segs.push({
+          label: rowLabel,
+          collectionID: maybeCollectionID,
+          libraryID: libraryMeta.id,
+          rowType: getTreeRowType(treeRow),
+        });
+      }
+    }
+    return segs;
+  }
   const chain: any[] = [];
   let cur = selected;
   while (cur) { chain.unshift(cur); if (!cur.parentID) break; cur = Zotero.Collections.get(cur.parentID); }
-  chain.forEach(col => segs.push({ label: col.name, collectionID: col.id }));
+  chain.forEach(col => segs.push({
+    label: col.name,
+    collectionID: col.id,
+    libraryID: libraryMeta.id,
+    rowType: "collection",
+  }));
   return segs;
 }
 
@@ -518,8 +691,16 @@ export function updateNavStrip(selected?: any) {
   if (!crumbs) return;
   closeBreadcrumbOverflowMenu();
   crumbs.textContent = "";
+  const treeRow = getSelectedTreeRow();
+  const rowType = getTreeRowType(treeRow);
+  const suppressNav = !!(rowType && NAV_STRIP_SUPPRESSED_ROW_TYPES.has(rowType));
+  strip.style.display = suppressNav ? "none" : "flex";
+  if (suppressNav) {
+    updateNavButtonsEnabled();
+    return;
+  }
   const sel = selected ?? getPane()?.getSelectedCollection();
-  const segs = getPathSegments(sel);
+  const segs = getPathSegments(sel, treeRow);
   const crumbNodes: BreadcrumbNode[] = [];
   segs.forEach((seg, idx) => {
     let separator: HTMLSpanElement | null = null;
@@ -541,17 +722,28 @@ export function updateNavStrip(selected?: any) {
     } else {
       crumb.removeAttribute("data-zfe-collection-id");
     }
+    if (seg.libraryID != null) {
+      crumb.setAttribute("data-zfe-library-id", String(seg.libraryID));
+    } else {
+      crumb.removeAttribute("data-zfe-library-id");
+    }
+    if (seg.rowType) {
+      crumb.setAttribute("data-zfe-row-type", seg.rowType);
+    } else {
+      crumb.removeAttribute("data-zfe-row-type");
+    }
     crumb.addEventListener("click", () => {
-      if (seg.collectionID != null) {
-        navigateToCollection(seg.collectionID);
+      if (activateBreadcrumbSegment(seg)) {
         deps.scheduleRerender(120);
       }
     });
     crumb.addEventListener("keydown", (ev: KeyboardEvent) => {
-      if ((ev.key === "Enter" || ev.key === " ") && seg.collectionID != null) {
-        ev.preventDefault();
-        navigateToCollection(seg.collectionID);
-        deps.scheduleRerender(120);
+      if (ev.key === "Enter" || ev.key === " ") {
+        const activated = activateBreadcrumbSegment(seg);
+        if (activated) {
+          ev.preventDefault();
+          deps.scheduleRerender(120);
+        }
       }
     });
     crumbs.appendChild(crumb);
@@ -559,6 +751,24 @@ export function updateNavStrip(selected?: any) {
   });
   scheduleBreadcrumbOverflowMeasurement(doc, crumbs, crumbNodes);
   updateNavButtonsEnabled();
+}
+
+/** Triggers navigation for a breadcrumb segment, returning true on success. */
+function activateBreadcrumbSegment(seg: PathSeg): boolean {
+  if (seg.collectionID != null) {
+    navigateToCollection(seg.collectionID);
+    return true;
+  }
+  if (seg.rowType) {
+    return navigateToTreeRowType(seg.rowType, seg.libraryID ?? null);
+  }
+  return false;
+}
+
+/** Determines whether a breadcrumb segment represents a navigable target. */
+function canActivateBreadcrumbSegment(seg: PathSeg): boolean {
+  if (seg.collectionID != null) return true;
+  return Boolean(seg.rowType);
 }
 
 /** Enables/disables back/forward buttons depending on available history. */
@@ -591,20 +801,149 @@ export function navigateToCollection(collectionID: number) {
       }
       if (targetRowIndex === -1) return;
 
-      if (cv.selection) {
-        cv.selection.select(targetRowIndex);
-        if (cv.tree?.invalidate) cv.tree.invalidate();
-      } else if (typeof cv._selectRow === "function") {
-        cv._selectRow(targetRowIndex);
-      } else if (cv._treebox?.getElementByIndex) {
-        cv._treebox.getElementByIndex(targetRowIndex)?.click();
-      }
+      if (!selectCollectionsTreeRowByIndex(cv, targetRowIndex)) return;
       deps.scheduleRerender(120);
     }, 200);
 
   } catch (_err) {
     // Ignore navigation errors; Zotero will continue functioning.
   }
+}
+
+/** Selects the root row for the provided library ID. */
+function navigateToLibraryRoot(libraryID?: number | null): boolean {
+  const pane = getPane();
+  const tree = pane?.collectionsView as _ZoteroTypes.CollectionTree | undefined;
+  const effectiveID =
+    libraryID ??
+    pane?.getSelectedLibraryID?.() ??
+    Zotero.Libraries?.userLibraryID ??
+    null;
+  if (!tree || effectiveID == null) return false;
+  try {
+    if (typeof tree.selectLibrary === "function") {
+      tree.selectLibrary(effectiveID);
+      return true;
+    }
+  } catch (_err) {
+    // Fall back to manual selection if selectLibrary fails.
+  }
+  return selectTreeRowByPredicate(
+    tree,
+    row => row.isLibrary?.() && getRowLibraryID(row) === effectiveID,
+  );
+}
+
+/** Selects a non-collection tree row (trash, publications, etc.) when available. */
+function navigateToTreeRowType(
+  rowType: CollectionTreeRowType,
+  libraryID: number | null,
+): boolean {
+  if (rowType === "library") {
+    return navigateToLibraryRoot(libraryID);
+  }
+  const pane = getPane();
+  const tree = pane?.collectionsView as _ZoteroTypes.CollectionTree | undefined;
+  if (!tree) return false;
+  const targetLibID = libraryID ?? pane?.getSelectedLibraryID?.() ?? null;
+  ensureLibraryRowExpanded(tree, targetLibID);
+  return selectTreeRowByPredicate(tree, row => {
+    if ((row as any)?.type !== rowType) return false;
+    const rowLibID = getRowLibraryID(row);
+    if (targetLibID != null && rowLibID != null && rowLibID !== targetLibID) {
+      return false;
+    }
+    return true;
+  });
+}
+
+/** Ensures the matching library row is expanded so children are visible/selectable. */
+function ensureLibraryRowExpanded(
+  tree: _ZoteroTypes.CollectionTree | any,
+  libraryID: number | null,
+) {
+  if (
+    !tree ||
+    libraryID == null ||
+    typeof tree.isContainer !== "function" ||
+    typeof tree.isContainerOpen !== "function" ||
+    typeof tree.toggleOpenState !== "function"
+  ) {
+    return;
+  }
+  const index = findTreeRowIndex(
+    tree,
+    row => row.isLibrary?.() && getRowLibraryID(row) === libraryID,
+  );
+  if (index === -1) return;
+  try {
+    if (!tree.isContainerOpen(index)) {
+      tree.toggleOpenState(index, true);
+    }
+  } catch (_err) {
+    // Swallow failures opening the tree.
+  }
+}
+
+/** Attempts to select a tree row by index using available Zotero APIs. */
+function selectCollectionsTreeRowByIndex(tree: any, index: number): boolean {
+  if (!tree || index == null || index < 0) return false;
+  try {
+    if (tree.selection) {
+      tree.selection.select(index);
+      if (tree.tree?.invalidate) tree.tree.invalidate();
+      return true;
+    }
+    if (typeof tree._selectRow === "function") {
+      tree._selectRow(index);
+      return true;
+    }
+    if (tree._treebox?.getElementByIndex) {
+      tree._treebox.getElementByIndex(index)?.click();
+      return true;
+    }
+  } catch (_err) {
+    return false;
+  }
+  return false;
+}
+
+/** Iterates over rows and selects the first one that satisfies the predicate. */
+function selectTreeRowByPredicate(
+  tree: _ZoteroTypes.CollectionTree | any,
+  predicate: (row: Zotero.CollectionTreeRow, index: number) => boolean,
+): boolean {
+  const index = findTreeRowIndex(tree, predicate);
+  if (index === -1) return false;
+  return selectCollectionsTreeRowByIndex(tree, index);
+}
+
+/** Locates the index in the collections tree that matches the predicate. */
+function findTreeRowIndex(
+  tree: _ZoteroTypes.CollectionTree | any,
+  predicate: (row: Zotero.CollectionTreeRow, index: number) => boolean,
+): number {
+  if (!tree) return -1;
+  const explicitCount = typeof tree.rowCount === "number" ? tree.rowCount : null;
+  const rows: any[] | undefined = (tree as any)?._rows;
+  const total =
+    explicitCount != null
+      ? explicitCount
+      : Array.isArray(rows)
+        ? rows.length
+        : 0;
+  for (let idx = 0; idx < total; idx++) {
+    const row = getTreeRowAtIndex(tree, idx);
+    if (!row) continue;
+    let match = false;
+    try {
+      match = predicate(row, idx);
+    } catch (_err) {
+      match = false;
+    }
+    if (match) return idx;
+  }
+  return -1;
 }
 
 /**
@@ -788,9 +1127,16 @@ function collectBreadcrumbNodesFromDOM(doc: Document, crumbsEl: HTMLElement): Br
         prev && prev.classList.contains("zfe-crumb-sep") ? (prev as HTMLSpanElement) : null;
       const label = crumb.getAttribute("data-zfe-label") || crumb.textContent || "";
       const collectionAttr = crumb.getAttribute("data-zfe-collection-id");
+      const libraryAttr = crumb.getAttribute("data-zfe-library-id");
+      const rowTypeAttr = crumb.getAttribute("data-zfe-row-type");
       const seg: PathSeg = {
         label,
         collectionID: collectionAttr && collectionAttr.length ? Number(collectionAttr) : null,
+        libraryID: libraryAttr && libraryAttr.length ? Number(libraryAttr) : null,
+        rowType:
+          rowTypeAttr && rowTypeAttr.length
+            ? (rowTypeAttr as CollectionTreeRowType)
+            : null,
       };
       nodes.push({ seg, crumb, separator });
     }
@@ -1160,14 +1506,14 @@ function openBreadcrumbOverflowMenu(target: HTMLElement, segments: PathSeg[]) {
     item.textContent = seg.label;
     item.title = seg.label;
     item.setAttribute("role", "menuitem");
-    if (seg.collectionID == null) {
+    if (!canActivateBreadcrumbSegment(seg)) {
       item.disabled = true;
     } else {
-      const targetID = seg.collectionID;
       item.addEventListener("click", () => {
         closeBreadcrumbOverflowMenu();
-        navigateToCollection(targetID);
-        deps.scheduleRerender(120);
+        if (activateBreadcrumbSegment(seg)) {
+          deps.scheduleRerender(120);
+        }
       });
     }
     menu.appendChild(item);

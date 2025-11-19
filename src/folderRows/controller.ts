@@ -11,6 +11,7 @@ import {
   detachHeaderObservers,
   teardownWindowResizeListener,
   getLastRenderedCollectionID,
+  getCurrentSelectionKey,
   requestNextFrame,
   cancelFrame,
   setRerenderTrigger,
@@ -186,8 +187,7 @@ export function teardownCollectionChangeListener() {
 function maybeScheduleRerenderForCollection(delay: number) {
   const pane = getPane();
   if (!pane) return;
-  const currentCollection = pane.getSelectedCollection();
-  const currentID = currentCollection?.id || null;
+  const currentID = getCurrentSelectionKey();
   const lastRendered = getLastRenderedCollectionID();
   if (currentID !== lastRendered) {
     scheduleRerender(delay);
