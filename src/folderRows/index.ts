@@ -1,1 +1,1 @@
-export { debugCurrentState, scheduleRerender, setupCollectionChangeListener, teardownCollectionChangeListener, shutdownFolderRows } from "./controller";
+export { scheduleRerender, setupCollectionChangeListener, teardownCollectionChangeListener, shutdownFolderRows } from "./controller";

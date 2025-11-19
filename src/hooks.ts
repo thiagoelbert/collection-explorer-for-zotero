@@ -1,4 +1,4 @@
-import { debugCurrentState, scheduleRerender, setupCollectionChangeListener, teardownCollectionChangeListener, shutdownFolderRows } from "./folderRows";
+import { scheduleRerender, setupCollectionChangeListener, teardownCollectionChangeListener, shutdownFolderRows } from "./folderRows";
 import { configureNavigation, isNavStripEnabled, setNavStripEnabled } from "./navigation";
 import { getString, initLocale } from "./utils/locale";
 
@@ -14,11 +14,7 @@ class Hooks {
    * Entry point for the addon: waits for the UI, wires menu items, boots folder rows.
    */
   static async onStartup() {
-    const ADDON_NAME = "Zotero File Explorer";
-    ztoolkit.log("Plugin starting...");
-
     await Zotero.uiReadyPromise;
-    ztoolkit.log("UI ready");
     initLocale();
 
     const toggleNavMenuId = "zotero-plugin-toggle-nav-strip";
@@ -31,7 +27,7 @@ class Hooks {
         const doc = Zotero.getMainWindow()?.document;
         const el = doc?.getElementById(toggleNavMenuId);
         if (el) el.setAttribute("label", getToggleNavLabel());
-      } catch { }
+      } catch (_err) { /* ignored */ }
     };
 
     ztoolkit.Menu.register("menuTools", {

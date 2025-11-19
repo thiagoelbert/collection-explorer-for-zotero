@@ -103,7 +103,6 @@ async function updatePrefsUI() {
       renderLock.resolve();
     });
   await renderLock.promise;
-  ztoolkit.log("Preference table rendered!");
 }
 
 function bindPrefEvents() {
@@ -112,7 +111,6 @@ function bindPrefEvents() {
       `#zotero-prefpane-${config.addonRef}-enable`,
     )
     ?.addEventListener("command", (e: Event) => {
-      ztoolkit.log(e);
       addon.data.prefs!.window.alert(
         `Successfully changed to ${(e.target as XUL.Checkbox).checked}!`,
       );
@@ -123,7 +121,6 @@ function bindPrefEvents() {
       `#zotero-prefpane-${config.addonRef}-input`,
     )
     ?.addEventListener("change", (e: Event) => {
-      ztoolkit.log(e);
       addon.data.prefs!.window.alert(
         `Successfully changed to ${(e.target as HTMLInputElement).value}!`,
       );

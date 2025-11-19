@@ -58,7 +58,7 @@ export function requestNextFrame(cb: FrameRequestCallback): number {
     if (win?.requestAnimationFrame) {
       return win.requestAnimationFrame(cb);
     }
-  } catch { }
+  } catch (_err) { /* ignored */ }
   return setTimeout(() => cb(Date.now()), 16) as unknown as number;
 }
 
@@ -70,7 +70,7 @@ export function cancelFrame(handle: number) {
       win.cancelAnimationFrame(handle);
       return;
     }
-  } catch { }
+  } catch (_err) { /* ignored */ }
   clearTimeout(handle);
 }
 
@@ -100,7 +100,6 @@ export function renderFolderRowsForCurrentCollection() {
 
   const subcollections = Zotero.Collections.getByParent(selected.id);
   const shouldResetScroll = previousCollectionID !== lastRenderedCollectionID;
-  ztoolkit.log(`Render ${subcollections.length} subcollections for "${selected.name}"`);
 
   renderFolderRows(subcollections, { resetScroll: shouldResetScroll });
 }
@@ -130,12 +129,11 @@ function renderFolderRows(subcollections: any[], options?: { resetScroll?: boole
 
   const body = findItemsBody(root);
   if (!body) {
-    ztoolkit.log("Items body not found; abort folder-rows render");
     detachFolderRowsResizeObserver();
     setExtraTopOffset(0);
     return;
   }
-  body.setAttribute("data-thiago-items-body", "true");
+  body.setAttribute("data-zfe-items-body", "true");
   ensureScrollTopCompensation(body);
 
   if (!subcollections || subcollections.length === 0) {
@@ -182,7 +180,7 @@ function buildFolderRow(subCol: any): HTMLElement {
   const doc = getDocument();
   const row = doc.createElement("div");
   row.setAttribute("role", "row");
-  row.className = "thiago-folder-row";
+  row.className = "zfe-folder-row";
   row.tabIndex = 0;
 
   row.style.cssText = `
@@ -255,7 +253,7 @@ function buildFolderRow(subCol: any): HTMLElement {
           countSpan.style.cssText =
             "font-weight:400;color:#666;margin-left:6px;";
         }
-      } catch {}
+      } catch (_err) { /* ignored */ }
 
       cell.append(icon, name, countSpan);
     } else {
@@ -324,7 +322,7 @@ function setExtraTopOffset(value: number) {
     const nativeScroll = scrollCompensationState.readNative();
     const next = Math.max(0, nativeScroll + delta);
     scrollCompensationState.writeNative(next);
-  } catch { }
+  } catch (_err) { /* ignored */ }
 }
 
 function scheduleExtraTopOffsetMeasure() {
@@ -368,7 +366,7 @@ function attachFolderRowsResizeObserver(container: HTMLElement | null) {
   try {
     folderRowsResizeObserver = new ResizeObserver(() => scheduleExtraTopOffsetMeasure());
     folderRowsResizeObserver.observe(container);
-  } catch {
+  } catch (_err) {
     folderRowsResizeObserver = null;
   }
 }
@@ -377,7 +375,7 @@ function detachFolderRowsResizeObserver() {
   if (!folderRowsResizeObserver) return;
   try {
     folderRowsResizeObserver.disconnect();
-  } catch { }
+  } catch (_err) { /* ignored */ }
   folderRowsResizeObserver = null;
 }
 
@@ -392,17 +390,17 @@ function ensureWindowResizeListener() {
     windowResizeCleanup = () => {
       try {
         win.removeEventListener("resize", handler);
-      } catch { }
+      } catch (_err) { /* ignored */ }
       windowResizeCleanup = null;
     };
-  } catch { }
+  } catch (_err) { /* ignored */ }
 }
 
 export function teardownWindowResizeListener() {
   if (!windowResizeCleanup) return;
   try {
     windowResizeCleanup();
-  } catch { }
+  } catch (_err) { /* ignored */ }
   windowResizeCleanup = null;
 }
 
@@ -453,7 +451,6 @@ function ensureScrollTopCompensation(body: HTMLElement) {
       readNative: accessorSetup.readNative,
       writeNative: accessorSetup.writeNative,
     };
-    ztoolkit.log("ScrollTop compensation active via accessor patch");
     return;
   }
 
@@ -466,9 +463,8 @@ function ensureScrollTopCompensation(body: HTMLElement) {
       readNative: proxySetup.readNative,
       writeNative: proxySetup.writeNative,
     };
-    ztoolkit.log("ScrollTop compensation active via proxy fallback");
   } else {
-    ztoolkit.log("ScrollTop compensation unavailable (no workable layer)");
+    // Unable to patch scroll behavior; continue without compensation.
   }
 }
 
@@ -476,7 +472,7 @@ export function teardownScrollTopCompensation() {
   if (!scrollCompensationState) return;
   try {
     scrollCompensationState.teardown();
-  } catch { }
+  } catch (_err) { /* ignored */ }
   scrollCompensationState = null;
 }
 
@@ -514,18 +510,18 @@ function tryPatchScrollTopAccessor(scroller: HTMLElement): ScrollCompensationSet
     const readNative = () => {
       try {
         return descriptor!.get!.call(scroller) as number;
-      } catch {
-        return sanitizeScrollValue((scroller as any).__thiagoRawScrollTop ?? 0);
+      } catch (_err) {
+        return sanitizeScrollValue((scroller as any).__zfeRawScrollTop ?? 0);
       }
     };
 
     const writeNative = (value: number) => {
       try {
         descriptor!.set!.call(scroller, value);
-      } catch {
+      } catch (_err) {
         try {
-          (scroller as any).__thiagoRawScrollTop = value;
-        } catch { }
+          (scroller as any).__zfeRawScrollTop = value;
+        } catch (_err) { /* ignored */ }
       }
     };
 
@@ -533,17 +529,16 @@ function tryPatchScrollTopAccessor(scroller: HTMLElement): ScrollCompensationSet
       teardown: () => {
         try {
           delete (scroller as any).scrollTop;
-        } catch {
+        } catch (_err) {
           try {
             Object.defineProperty(scroller, "scrollTop", descriptor!);
-          } catch { }
+          } catch (_err) { /* ignored */ }
         }
       },
       readNative,
       writeNative,
     };
-  } catch (error) {
-    ztoolkit.log("ScrollTop accessor patch failed:", error);
+  } catch (_err) {
     return null;
   }
 }
@@ -560,7 +555,7 @@ function tryProxyScrollTop(scroller: HTMLElement): ScrollCompensationSetupResult
         keys.push(key);
       }
     }
-  } catch {
+  } catch (_err) {
     return null;
   }
 
@@ -570,7 +565,7 @@ function tryProxyScrollTop(scroller: HTMLElement): ScrollCompensationSetupResult
   keys.forEach((key) => {
     try {
       (itemsView as any)[key] = proxy;
-    } catch { }
+    } catch (_err) { /* ignored */ }
   });
 
   return {
@@ -578,7 +573,7 @@ function tryProxyScrollTop(scroller: HTMLElement): ScrollCompensationSetupResult
       keys.forEach((key) => {
         try {
           (itemsView as any)[key] = scroller;
-        } catch { }
+        } catch (_err) { /* ignored */ }
       });
     },
     readNative: () => sanitizeScrollValue(scroller.scrollTop),
@@ -629,7 +624,7 @@ function isScrollableElement(el: HTMLElement): boolean {
     const style = win?.getComputedStyle(el);
     if (!style) return false;
     return style.overflowY === "auto" || style.overflowY === "scroll";
-  } catch {
+  } catch (_err) {
     return false;
   }
 }
@@ -647,12 +642,12 @@ function setScrollerActualScroll(scroller: HTMLElement, actualValue: number): bo
     try {
       scrollCompensationState.writeNative(numeric);
       return true;
-    } catch { }
+    } catch (_err) { /* ignored */ }
   }
   try {
     scroller.scrollTop = numeric;
     return true;
-  } catch {
+  } catch (_err) {
     return false;
   }
 }
@@ -667,7 +662,7 @@ function attachItemsBodyListeners(body: HTMLElement) {
     const target = event.target as HTMLElement | null;
     if (!target) return;
     itemsPaneHasFocus = true;
-    if (target.closest(".thiago-folder-row")) {
+    if (target.closest(".zfe-folder-row")) {
       refreshSelectedFolderRowAppearance();
       return;
     }
@@ -684,7 +679,7 @@ function attachItemsBodyListeners(body: HTMLElement) {
   const handleMouseDown = (event: MouseEvent) => {
     const target = event.target as HTMLElement | null;
     if (!target) return;
-    if (target.closest(".thiago-folder-row")) {
+    if (target.closest(".zfe-folder-row")) {
       itemsPaneHasFocus = true;
       refreshSelectedFolderRowAppearance();
       return;
@@ -698,7 +693,7 @@ function attachItemsBodyListeners(body: HTMLElement) {
     if (!folderRows.length) return;
     const target = event.target as HTMLElement | null;
     if (!target) return;
-    if (target.closest(".thiago-folder-row")) return;
+    if (target.closest(".zfe-folder-row")) return;
     const row =
       (target.closest('[role="row"], [role="treeitem"], .row') as HTMLElement | null) ||
       getFocusedNativeRow();
@@ -728,7 +723,7 @@ function detachItemsBodyListeners() {
   if (itemsBodyCleanup) {
     try {
       itemsBodyCleanup();
-    } catch { }
+    } catch (_err) { /* ignored */ }
     itemsBodyCleanup = null;
   }
 }
@@ -777,7 +772,7 @@ function handleFolderRowArrowNavigation(delta: number, originRow: HTMLElement): 
 }
 
 const NATIVE_ROW_SELECTOR =
-  '.windowed-list .row, [role="treeitem"], [role="row"]:not(.thiago-folder-row)';
+  '.windowed-list .row, [role="treeitem"], [role="row"]:not(.zfe-folder-row)';
 const NATIVE_FOCUSED_SELECTOR =
   '.windowed-list .row.focused, [role="treeitem"].focused, [role="row"].focused';
 
@@ -826,7 +821,7 @@ function clearNativeRowFocus() {
 
 function isNativeItemRow(node: HTMLElement): boolean {
   if (!node) return false;
-  if (node.classList.contains("thiago-folder-row")) return false;
+  if (node.classList.contains("zfe-folder-row")) return false;
   const role = node.getAttribute("role");
   if (role === "treeitem") return true;
   if (role === "row") return true;
@@ -852,11 +847,11 @@ function selectNativeRowElement(row: HTMLElement) {
       } else if (selection?.select) {
         selection.select(index);
       }
-    } catch { }
+    } catch (_err) { /* ignored */ }
   } else {
     try {
       row.click();
-    } catch { }
+    } catch (_err) { /* ignored */ }
   }
 
   focusItemsTreeContainer();
@@ -897,7 +892,7 @@ function focusItemsTreeContainer() {
   if (!target) return;
   try {
     target.focus();
-  } catch { }
+  } catch (_err) { /* ignored */ }
 }
 
 function blurItemsTreeContainer() {
@@ -905,7 +900,7 @@ function blurItemsTreeContainer() {
   if (!target) return;
   try {
     target.blur();
-  } catch { }
+  } catch (_err) { /* ignored */ }
 }
 
 function setSelectedFolderRow(row: HTMLElement | null) {
@@ -913,7 +908,7 @@ function setSelectedFolderRow(row: HTMLElement | null) {
   if (selectedFolderRow) {
     const previousColor = selectedFolderRow.dataset.stripeColor || "";
     selectedFolderRow.style.background = previousColor;
-    selectedFolderRow.classList.remove("thiago-folder-row--selected");
+    selectedFolderRow.classList.remove("zfe-folder-row--selected");
     selectedFolderRow.style.color = FOLDER_ROW_DEFAULT_COLOR;
   }
 
@@ -923,12 +918,12 @@ function setSelectedFolderRow(row: HTMLElement | null) {
     return;
   }
 
-  row.classList.add("thiago-folder-row--selected");
+  row.classList.add("zfe-folder-row--selected");
   itemsPaneHasFocus = true;
   blurItemsTreeContainer();
   try {
     row.focus();
-  } catch { }
+  } catch (_err) { /* ignored */ }
   refreshSelectedFolderRowAppearance();
   clearNativeItemSelection();
 }
@@ -939,11 +934,11 @@ function updateZebraFlipFlag() {
     const tree = doc.getElementById("zotero-items-tree");
     if (!tree) return;
     if (folderRows.length % 2 === 1) {
-      tree.setAttribute("data-thiago-flip", "1");
+      tree.setAttribute("data-zfe-flip", "1");
     } else {
-      tree.removeAttribute("data-thiago-flip");
+      tree.removeAttribute("data-zfe-flip");
     }
-  } catch { }
+  } catch (_err) { /* ignored */ }
 }
 
 function refreshSelectedFolderRowAppearance() {
@@ -990,7 +985,7 @@ function clearNativeItemSelection() {
       treeSelection.clearSelection();
     }
     clearNativeRowFocus();
-  } catch { }
+  } catch (_err) { /* ignored */ }
 }
 
 function attachHeaderObservers(headerRow: HTMLElement | null, onChange: () => void) {
@@ -1011,11 +1006,11 @@ function attachHeaderObservers(headerRow: HTMLElement | null, onChange: () => vo
 /** Disconnects ResizeObserver/MutationObserver watching the items header. */
 export function detachHeaderObservers() {
   if (headerResizeObserver) {
-    try { headerResizeObserver.disconnect(); } catch { }
+    try { headerResizeObserver.disconnect(); } catch (_err) { /* ignored */ }
     headerResizeObserver = null;
   }
   if (columnsMutationObserver) {
-    try { columnsMutationObserver.disconnect(); } catch { }
+    try { columnsMutationObserver.disconnect(); } catch (_err) { /* ignored */ }
     columnsMutationObserver = null;
   }
 }
@@ -1038,7 +1033,7 @@ function findItemsBody(root: HTMLElement): HTMLElement | null {
   const hostWin = ((): Window | null => {
     try {
       return Zotero.getMainWindow();
-    } catch {
+    } catch (_err) {
       return null;
     }
   })();
@@ -1046,7 +1041,7 @@ function findItemsBody(root: HTMLElement): HTMLElement | null {
   const docWin = ((): Window | null => {
     try {
       return getDocument().defaultView;
-    } catch {
+    } catch (_err) {
       return null;
     }
   })();
@@ -1082,7 +1077,7 @@ export function removeFolderRows() {
   folderRows.forEach((row) => {
     try {
       row.remove();
-    } catch { }
+    } catch (_err) { /* ignored */ }
   });
   folderRows = [];
   selectedFolderRow = null;

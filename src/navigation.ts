@@ -23,7 +23,6 @@ export function configureNavigation(newDeps: NavigationDeps) {
 
 // --- history ---
 // Keeps a lightweight back/forward stack matching Zotero's selection history.
-const NAV_DEBUG = false;
 const navHistory: number[] = [];
 let navIndex = -1;
 const pendingHistoryNavigations: number[] = [];
@@ -31,19 +30,6 @@ let navStripEnabled = true;
 let navStripCleanup: (() => void) | null = null;
 let navOverflowMenuCleanup: (() => void) | null = null;
 let navOverflowMenuAnchor: HTMLElement | null = null;
-
-// Debug helper that prints the current history stack when NAV_DEBUG is true.
-function logNav(message: string, extra?: Record<string, unknown>) {
-  if (!NAV_DEBUG) return;
-  const stack = navHistory.join(">");
-  const pending = pendingHistoryNavigations.join(">");
-  const state = `idx=${navIndex} hist=[${stack}] pending=[${pending}]`;
-  if (extra && Object.keys(extra).length) {
-    ztoolkit.log(`[Nav] ${message} | ${state} | ${JSON.stringify(extra)}`);
-  } else {
-    ztoolkit.log(`[Nav] ${message} | ${state}`);
-  }
-}
 
 // Minimal representation of a location in the breadcrumb trail.
 type PathSeg = { label: string; collectionID: number | null };
@@ -56,7 +42,7 @@ type BreadcrumbNode = {
 };
 
 // Breadcrumb overflow management constants.
-const BREADCRUMB_TAIL_CLAMP_CLASS = "thiago-crumb-tail-clamped";
+const BREADCRUMB_TAIL_CLAMP_CLASS = "zfe-crumb-tail-clamped";
 const BREADCRUMB_SCROLL_SETTLE_DELAY = 200;
 const BREADCRUMB_RESIZE_RELEASE_TIMEOUT = 1200;
 type BreadcrumbScrollTarget = "start" | "end";
@@ -106,7 +92,7 @@ export function navigateUp() {
 function commitPath(raw: string) {
   const target = resolveCollectionByPath(raw.trim());
   const doc = getDocument();
-  const strip = doc.getElementById("thiago-nav-strip") as any;
+  const strip = doc.getElementById("zfe-nav-strip") as any;
   if (target) {
     navigateToCollection(target.id);
     deps.scheduleRerender(120);
@@ -176,12 +162,12 @@ export function getCurrentPathString(): string {
 
 /** Injects stylesheet rules once so the strip renders correctly in Zotero. */
 function ensureNavStripCSS(doc: Document) {
-  if (doc.getElementById("thiago-nav-strip-style")) return;
+  if (doc.getElementById("zfe-nav-strip-style")) return;
   const s = doc.createElement("style");
-  s.id = "thiago-nav-strip-style";
+  s.id = "zfe-nav-strip-style";
   s.textContent = `
   /* container */
-  #thiago-nav-strip {
+  #zfe-nav-strip {
     display:flex; align-items:center; gap:8px;
     padding:6px 8px;
     border-bottom:1px solid var(--color-border, #dadada);
@@ -190,50 +176,50 @@ function ensureNavStripCSS(doc: Document) {
     box-sizing:border-box;
     max-width:100%;
   }
-  #thiago-nav-strip button {
+  #zfe-nav-strip button {
     border:none; background:transparent; padding:4px 6px; border-radius:6px;
     font-size:14px; line-height:1; cursor:pointer;
   }
-  #thiago-nav-strip button:hover { background: var(--accent-blue10, rgba(64,114,229,.1)); }
-  #thiago-nav-strip button:disabled { opacity:.35; cursor:default; }
-  #thiago-nav-path {
+  #zfe-nav-strip button:hover { background: var(--accent-blue10, rgba(64,114,229,.1)); }
+  #zfe-nav-strip button:disabled { opacity:.35; cursor:default; }
+  #zfe-nav-path {
     flex:1 1 240px; min-width:0; display:flex; align-items:center; gap:6px;
     padding:2px 6px; border-radius:6px; background: var(--material-button, #fff); border:1px solid var(--color-border, #dadada);
     overflow:hidden;
   }
-  #thiago-nav-strip .thiago-nav-flex-spacer {
+  #zfe-nav-strip .zfe-nav-flex-spacer {
     flex:0 0 12px;
     min-width:12px;
     height:1px;
     pointer-events:none;
   }
-  #thiago-nav-breadcrumbs {
+  #zfe-nav-breadcrumbs {
     display:flex; align-items:center; gap:4px;
     flex-wrap:nowrap;
     overflow:hidden;
     min-width:0;
     white-space:nowrap;
   }
-  .thiago-crumb {
+  .zfe-crumb {
     display:inline-flex; align-items:center; gap:6px; white-space:nowrap; padding:2px 4px; border-radius:4px; cursor:pointer;
     flex-shrink:0;
   }
-  .thiago-crumb.${BREADCRUMB_TAIL_CLAMP_CLASS} {
+  .zfe-crumb.${BREADCRUMB_TAIL_CLAMP_CLASS} {
     flex-shrink:1;
     min-width:0;
     max-width:100%;
     overflow:hidden;
     text-overflow:ellipsis;
   }
-  .thiago-crumb:hover { background: var(--accent-blue10, rgba(64,114,229,.1)); }
-  .thiago-crumb.thiago-nav-menu-open { background: var(--accent-blue20, rgba(64,114,229,.2)); }
-  .thiago-crumb-ellipsis { font-weight:600; }
-  .thiago-crumb-sep {
+  .zfe-crumb:hover { background: var(--accent-blue10, rgba(64,114,229,.1)); }
+  .zfe-crumb.zfe-nav-menu-open { background: var(--accent-blue20, rgba(64,114,229,.2)); }
+  .zfe-crumb-ellipsis { font-weight:600; }
+  .zfe-crumb-sep {
     opacity:.6;
     user-select:none;
     margin:0 4px;
   }
-  .thiago-nav-overflow-menu {
+  .zfe-nav-overflow-menu {
     position:fixed;
     display:flex;
     flex-direction:column;
@@ -245,7 +231,7 @@ function ensureNavStripCSS(doc: Document) {
     z-index:2147483647;
     min-width:160px;
   }
-  .thiago-nav-overflow-menu button {
+  .zfe-nav-overflow-menu button {
     background:transparent;
     border:none;
     text-align:left;
@@ -253,12 +239,12 @@ function ensureNavStripCSS(doc: Document) {
     font:inherit;
     cursor:pointer;
   }
-  .thiago-nav-overflow-menu button:hover { background: var(--accent-blue10, rgba(64,114,229,.1)); }
-  .thiago-nav-overflow-menu button:disabled { opacity:.5; cursor:default; }
-  #thiago-nav-input {
+  .zfe-nav-overflow-menu button:hover { background: var(--accent-blue10, rgba(64,114,229,.1)); }
+  .zfe-nav-overflow-menu button:disabled { opacity:.5; cursor:default; }
+  #zfe-nav-input {
     width:100%; border:none; outline:none; background:transparent; font:inherit; padding:0;
   }
-  #thiago-nav-path.editing { outline:2px solid var(--accent-blue30, rgba(64,114,229,.3)); }
+  #zfe-nav-path.editing { outline:2px solid var(--accent-blue30, rgba(64,114,229,.3)); }
   `;
   const host = doc.head || doc.querySelector("head") || doc.documentElement;
   if (host) host.appendChild(s);
@@ -276,29 +262,24 @@ export function pushToHistory(id: number | null) {
   ) {
     pendingHistoryNavigations.shift();
     updateNavButtonsEnabled();
-    logNav("push skip (pending match)", { id });
     return;
   }
   if (pendingHistoryNavigations.length) {
-    logNav("push ignored (waiting for pending match)", { id, waitingFor: pendingHistoryNavigations[0] });
     return;
   }
   if (navIndex >= 0 && navHistory[navIndex] === id) {
     updateNavButtonsEnabled();
-    logNav("push no-op (same index)", { id });
     return;
   }
   if (navHistory.length && navHistory[navHistory.length - 1] === id) {
     navIndex = navHistory.length - 1;
     updateNavButtonsEnabled();
-    logNav("push collapse duplicate tail", { id });
     return;
   }
   if (navIndex < navHistory.length - 1) navHistory.splice(navIndex + 1);
   navHistory.push(id);
   navIndex = navHistory.length - 1;
   updateNavButtonsEnabled();
-  logNav("push add", { id });
 }
 
 // Quick bounds-check helper for history navigation.
@@ -313,7 +294,6 @@ export function navigateHistory(delta: -1 | 1) {
   navIndex += delta;
   const id = navHistory[navIndex];
   pendingHistoryNavigations.push(id);
-  logNav("navigate", { delta, id });
   navigateToCollection(id);
   deps.scheduleRerender(120);
   updateNavButtonsEnabled();
@@ -328,7 +308,7 @@ export function mountNavStrip(doc: Document) {
     removeNavStrip(doc);
     return;
   }
-  if (doc.getElementById("thiago-nav-strip")) return;
+  if (doc.getElementById("zfe-nav-strip")) return;
 
   const pane = getPane();
   const root = pane?.itemsView?.domEl as HTMLElement | null;
@@ -343,7 +323,7 @@ export function mountNavStrip(doc: Document) {
     root.querySelector<HTMLElement>("#zotero-items-toolbar");
 
   const strip = doc.createElement("div");
-  strip.id = "thiago-nav-strip";
+  strip.id = "zfe-nav-strip";
   strip.style.display = "flex";
   strip.style.alignItems = "center";
   strip.style.gap = "8px";
@@ -356,13 +336,13 @@ export function mountNavStrip(doc: Document) {
   buttonsWrap.style.alignItems = "center";
   buttonsWrap.style.gap = "4px";
 
-  const backBtn = createNavButton(doc, "thiago-nav-back", "Back (Alt+Left)", "\u2190");
-  const fwdBtn = createNavButton(doc, "thiago-nav-forward", "Forward (Alt+Right)", "\u2192");
-  const upBtn = createNavButton(doc, "thiago-nav-up", "Up (Alt+Up)", "\u2191");
+  const backBtn = createNavButton(doc, "zfe-nav-back", "Back (Alt+Left)", "\u2190");
+  const fwdBtn = createNavButton(doc, "zfe-nav-forward", "Forward (Alt+Right)", "\u2192");
+  const upBtn = createNavButton(doc, "zfe-nav-up", "Up (Alt+Up)", "\u2191");
   buttonsWrap.append(backBtn, fwdBtn, upBtn);
 
   const pathBox = doc.createElement("div");
-  pathBox.id = "thiago-nav-path";
+  pathBox.id = "zfe-nav-path";
   pathBox.style.minWidth = "0";
   pathBox.style.flex = "1";
   pathBox.style.display = "flex";
@@ -375,7 +355,7 @@ export function mountNavStrip(doc: Document) {
   pathBox.title = "Click to edit / Ctrl+L to focus";
 
   const crumbs = doc.createElement("div");
-  crumbs.id = "thiago-nav-breadcrumbs";
+  crumbs.id = "zfe-nav-breadcrumbs";
   crumbs.style.display = "flex";
   crumbs.style.alignItems = "center";
   crumbs.style.gap = "4px";
@@ -386,7 +366,7 @@ export function mountNavStrip(doc: Document) {
   crumbs.style.flex = "1";
 
   const input = doc.createElement("input");
-  input.id = "thiago-nav-input";
+  input.id = "zfe-nav-input";
   input.style.display = "none";
   input.style.flex = "1";
   input.style.border = "none";
@@ -405,7 +385,7 @@ export function mountNavStrip(doc: Document) {
   pathRow.append(pathBox);
 
   const flexSpacer = doc.createElement("div");
-  flexSpacer.className = "thiago-nav-flex-spacer";
+  flexSpacer.className = "zfe-nav-flex-spacer";
   flexSpacer.setAttribute("aria-hidden", "true");
 
   strip.append(buttonsWrap, flexSpacer, pathRow);
@@ -477,7 +457,7 @@ export function mountNavStrip(doc: Document) {
     cleanupTasks.splice(0).forEach(fn => {
       try {
         fn();
-      } catch { }
+      } catch (_err) { /* ignored */ }
     });
     navStripCleanup = null;
   };
@@ -529,12 +509,12 @@ export function updateNavStrip(selected?: any) {
     removeNavStrip(doc);
     return;
   }
-  const strip = doc.getElementById("thiago-nav-strip");
+  const strip = doc.getElementById("zfe-nav-strip");
   if (!strip) {
     mountNavStrip(doc);
     return updateNavStrip(selected);
   }
-  const crumbs = doc.getElementById("thiago-nav-breadcrumbs");
+  const crumbs = doc.getElementById("zfe-nav-breadcrumbs") as HTMLElement | null;
   if (!crumbs) return;
   closeBreadcrumbOverflowMenu();
   crumbs.textContent = "";
@@ -545,21 +525,21 @@ export function updateNavStrip(selected?: any) {
     let separator: HTMLSpanElement | null = null;
     if (idx > 0) {
       const sep = doc.createElement("span");
-      sep.className = "thiago-crumb-sep";
+      sep.className = "zfe-crumb-sep";
       sep.textContent = ">";
       crumbs.appendChild(sep);
       separator = sep;
     }
     const crumb = doc.createElement("span");
-    crumb.className = "thiago-crumb";
+    crumb.className = "zfe-crumb";
     crumb.textContent = seg.label;
     crumb.title = seg.label;
     crumb.tabIndex = 0;
-    crumb.setAttribute("data-thiago-label", seg.label);
+    crumb.setAttribute("data-zfe-label", seg.label);
     if (seg.collectionID != null) {
-      crumb.setAttribute("data-thiago-collection-id", String(seg.collectionID));
+      crumb.setAttribute("data-zfe-collection-id", String(seg.collectionID));
     } else {
-      crumb.removeAttribute("data-thiago-collection-id");
+      crumb.removeAttribute("data-zfe-collection-id");
     }
     crumb.addEventListener("click", () => {
       if (seg.collectionID != null) {
@@ -584,11 +564,10 @@ export function updateNavStrip(selected?: any) {
 /** Enables/disables back/forward buttons depending on available history. */
 function updateNavButtonsEnabled() {
   const doc = getDocument();
-  const backBtn = doc.getElementById("thiago-nav-back") as HTMLButtonElement | null;
-  const fwdBtn = doc.getElementById("thiago-nav-forward") as HTMLButtonElement | null;
+  const backBtn = doc.getElementById("zfe-nav-back") as HTMLButtonElement | null;
+  const fwdBtn = doc.getElementById("zfe-nav-forward") as HTMLButtonElement | null;
   if (backBtn) backBtn.disabled = !canGo(-1);
   if (fwdBtn) fwdBtn.disabled = !canGo(1);
-  logNav("buttons updated", { backEnabled: !backBtn?.disabled, forwardEnabled: !fwdBtn?.disabled });
 }
 
 /**
@@ -598,7 +577,6 @@ function updateNavButtonsEnabled() {
 export function navigateToCollection(collectionID: number) {
   const pane = getPane();
   if (!pane?.collectionsView) {
-    ztoolkit.log("No pane or collectionsView available");
     return;
   }
   try {
@@ -624,8 +602,8 @@ export function navigateToCollection(collectionID: number) {
       deps.scheduleRerender(120);
     }, 200);
 
-  } catch (e) {
-    ztoolkit.log(`navigateToCollection error: ${e}`);
+  } catch (_err) {
+    // Ignore navigation errors; Zotero will continue functioning.
   }
 }
 
@@ -658,8 +636,8 @@ function expandParentCollections(collectionID: number) {
         }
       }
     }
-  } catch (e) {
-    ztoolkit.log(`expandParentCollections error: ${e}`);
+  } catch (_err) {
+    // Ignore expansion errors; children might already be visible.
   }
 }
 
@@ -735,14 +713,14 @@ function setupNavStripWidthTracking(doc: Document, strip: HTMLElement) {
     cleanupFns.splice(0).forEach(fn => {
       try {
         fn();
-      } catch { }
+      } catch (_err) { /* ignored */ }
     });
   };
 }
 
 /** Applies the current container width to the nav strip element. */
 function updateNavStripWidth(doc: Document, strip?: HTMLElement | null) {
-  const nav = strip ?? (doc.getElementById("thiago-nav-strip") as HTMLElement | null);
+  const nav = strip ?? (doc.getElementById("zfe-nav-strip") as HTMLElement | null);
   if (!nav) return;
   const hostRect = getNavHostRect(doc);
   if (hostRect && hostRect.width > 0) {
@@ -770,7 +748,7 @@ function getNavHostRect(doc: Document): DOMRect | null {
  * Called on resize, theme changes, and when the crumb list is rebuilt.
  */
 function refreshBreadcrumbOverflow(doc: Document) {
-  const crumbs = doc.getElementById("thiago-nav-breadcrumbs") as HTMLElement | null;
+  const crumbs = doc.getElementById("zfe-nav-breadcrumbs") as HTMLElement | null;
   if (!crumbs || crumbs.style.display === "none" || !crumbs.isConnected) return;
   closeBreadcrumbOverflowMenu();
   removeBreadcrumbEllipsis(crumbs);
@@ -787,8 +765,8 @@ function refreshBreadcrumbOverflow(doc: Document) {
 
 /** Removes the previously inserted ellipsis node before re-measuring overflow. */
 function removeBreadcrumbEllipsis(crumbsEl: HTMLElement) {
-  const toRemove = crumbsEl.querySelectorAll(".thiago-crumb-ellipsis, .thiago-crumb-ellipsis-sep");
-  toRemove.forEach(el => {
+  const toRemove = crumbsEl.querySelectorAll(".zfe-crumb-ellipsis, .zfe-crumb-ellipsis-sep");
+  toRemove.forEach((el: Element) => {
     if (el.parentElement === crumbsEl) {
       el.remove();
     }
@@ -801,15 +779,15 @@ function collectBreadcrumbNodesFromDOM(doc: Document, crumbsEl: HTMLElement): Br
   let child = crumbsEl.firstElementChild;
   while (child) {
     if (
-      child.classList.contains("thiago-crumb") &&
-      !child.classList.contains("thiago-crumb-ellipsis")
+      child.classList.contains("zfe-crumb") &&
+      !child.classList.contains("zfe-crumb-ellipsis")
     ) {
       const crumb = child as HTMLSpanElement;
       const prev = crumb.previousElementSibling;
       const separator =
-        prev && prev.classList.contains("thiago-crumb-sep") ? (prev as HTMLSpanElement) : null;
-      const label = crumb.getAttribute("data-thiago-label") || crumb.textContent || "";
-      const collectionAttr = crumb.getAttribute("data-thiago-collection-id");
+        prev && prev.classList.contains("zfe-crumb-sep") ? (prev as HTMLSpanElement) : null;
+      const label = crumb.getAttribute("data-zfe-label") || crumb.textContent || "";
+      const collectionAttr = crumb.getAttribute("data-zfe-collection-id");
       const seg: PathSeg = {
         label,
         collectionID: collectionAttr && collectionAttr.length ? Number(collectionAttr) : null,
@@ -863,7 +841,7 @@ function getTailAvailableWidth(crumbsEl: HTMLElement, tail: HTMLElement) {
   const children = Array.from(crumbsEl.children) as HTMLElement[];
   children.forEach(child => {
     if (child === tail) return;
-    const display = win?.getComputedStyle?.(child).display ?? "";
+    const display = win?.getComputedStyle?.(child)?.display ?? "";
     if (display === "none") return;
     occupied += child.getBoundingClientRect().width;
   });
@@ -962,7 +940,7 @@ function cancelBreadcrumbScrollTimer(controller: BreadcrumbScrollController) {
   if (controller.timer != null && controller.timerOwner) {
     try {
       controller.timerOwner.clearTimeout(controller.timer);
-    } catch { }
+    } catch (_err) { /* ignored */ }
   }
   controller.timer = null;
   controller.timerOwner = null;
@@ -990,7 +968,7 @@ function disposeBreadcrumbScrollController(crumbsEl: HTMLElement, win?: Window |
   if (controller.timer != null && (win ?? controller.timerOwner)) {
     try {
       (win ?? controller.timerOwner)?.clearTimeout(controller.timer);
-    } catch { }
+    } catch (_err) { /* ignored */ }
   }
   breadcrumbScrollControllers.delete(crumbsEl);
   breadcrumbControllerElements.delete(crumbsEl);
@@ -1005,7 +983,7 @@ function beginBreadcrumbResizeHold(win?: Window | null) {
   if (breadcrumbResizeUnlockTimer != null && (win ?? breadcrumbResizeUnlockTimerOwner)) {
     try {
       (win ?? breadcrumbResizeUnlockTimerOwner)?.clearTimeout(breadcrumbResizeUnlockTimer);
-    } catch { }
+    } catch (_err) { /* ignored */ }
     breadcrumbResizeUnlockTimer = null;
     breadcrumbResizeUnlockTimerOwner = null;
   }
@@ -1020,7 +998,7 @@ function scheduleBreadcrumbResizeRelease(win: Window | null) {
   if (breadcrumbResizeUnlockTimer != null && breadcrumbResizeUnlockTimerOwner) {
     try {
       breadcrumbResizeUnlockTimerOwner.clearTimeout(breadcrumbResizeUnlockTimer);
-    } catch { }
+    } catch (_err) { /* ignored */ }
   }
   breadcrumbResizeUnlockTimerOwner = win;
   breadcrumbResizeUnlockTimer = win.setTimeout(() => {
@@ -1037,7 +1015,7 @@ function endBreadcrumbResizeHold() {
   if (breadcrumbResizeUnlockTimer != null && breadcrumbResizeUnlockTimerOwner) {
     try {
       breadcrumbResizeUnlockTimerOwner.clearTimeout(breadcrumbResizeUnlockTimer);
-    } catch { }
+    } catch (_err) { /* ignored */ }
     breadcrumbResizeUnlockTimer = null;
     breadcrumbResizeUnlockTimerOwner = null;
   }
@@ -1130,25 +1108,25 @@ function getBreadcrumbAvailableWidth(doc: Document, crumbsEl: HTMLElement) {
 function insertBreadcrumbEllipsis(doc: Document, crumbsEl: HTMLElement, segments: PathSeg[]) {
   if (!segments.length) return;
   const ellipsis = doc.createElement("span");
-  ellipsis.className = "thiago-crumb thiago-crumb-ellipsis";
+  ellipsis.className = "zfe-crumb zfe-crumb-ellipsis";
   ellipsis.textContent = "\u2026";
   ellipsis.title = segments.map(seg => seg.label).join(" > ");
   ellipsis.tabIndex = 0;
   ellipsis.setAttribute("role", "button");
   const activate = () => toggleBreadcrumbOverflowMenu(ellipsis, segments);
-  ellipsis.addEventListener("click", ev => {
+  ellipsis.addEventListener("click", (ev: MouseEvent) => {
     ev.preventDefault();
     ev.stopPropagation();
     activate();
   });
-  ellipsis.addEventListener("keydown", ev => {
+  ellipsis.addEventListener("keydown", (ev: KeyboardEvent) => {
     if (ev.key === "Enter" || ev.key === " ") {
       ev.preventDefault();
       activate();
     }
   });
   const sep = doc.createElement("span");
-  sep.className = "thiago-crumb-sep thiago-crumb-ellipsis-sep";
+  sep.className = "zfe-crumb-sep zfe-crumb-ellipsis-sep";
   sep.textContent = ">";
   crumbsEl.prepend(sep);
   crumbsEl.prepend(ellipsis);
@@ -1171,13 +1149,13 @@ function openBreadcrumbOverflowMenu(target: HTMLElement, segments: PathSeg[]) {
   const host = doc.body || doc.documentElement;
   if (!host) return;
   const menu = doc.createElement("div");
-  menu.id = "thiago-nav-overflow-menu";
-  menu.className = "thiago-nav-overflow-menu";
+  menu.id = "zfe-nav-overflow-menu";
+  menu.className = "zfe-nav-overflow-menu";
   menu.setAttribute("role", "menu");
   menu.tabIndex = -1;
   segments.forEach(seg => {
     const item = doc.createElement("button");
-    item.className = "thiago-nav-menu-item";
+    item.className = "zfe-nav-menu-item";
     item.type = "button";
     item.textContent = seg.label;
     item.title = seg.label;
@@ -1239,15 +1217,15 @@ function openBreadcrumbOverflowMenu(target: HTMLElement, segments: PathSeg[]) {
   navOverflowMenuCleanup = () => {
     try {
       menu.remove();
-    } catch { }
+    } catch (_err) { /* ignored */ }
     doc.removeEventListener("mousedown", handlePointer, true);
     doc.removeEventListener("contextmenu", handlePointer, true);
     doc.removeEventListener("keydown", handleKey, true);
-    target.classList.remove("thiago-nav-menu-open");
+    target.classList.remove("zfe-nav-menu-open");
     navOverflowMenuAnchor = null;
   };
   navOverflowMenuAnchor = target;
-  target.classList.add("thiago-nav-menu-open");
+  target.classList.add("zfe-nav-menu-open");
 }
 
 /** Safely disposes the overflow menu if present. */
@@ -1255,7 +1233,7 @@ function closeBreadcrumbOverflowMenu() {
   if (navOverflowMenuCleanup) {
     try {
       navOverflowMenuCleanup();
-    } catch { }
+    } catch (_err) { /* ignored */ }
     navOverflowMenuCleanup = null;
     navOverflowMenuAnchor = null;
   }
@@ -1266,18 +1244,18 @@ function removeNavStrip(doc?: Document) {
   const documentRef = doc ?? (() => {
     try {
       return getDocument();
-    } catch {
+    } catch (_err) {
       return null;
     }
   })();
   if (!documentRef) return;
   closeBreadcrumbOverflowMenu();
-  const crumbs = documentRef.getElementById("thiago-nav-breadcrumbs") as HTMLElement | null;
-  const strip = documentRef.getElementById("thiago-nav-strip");
+  const crumbs = documentRef.getElementById("zfe-nav-breadcrumbs") as HTMLElement | null;
+  const strip = documentRef.getElementById("zfe-nav-strip");
   if (strip) {
     try {
       strip.remove();
-    } catch { }
+    } catch (_err) { /* ignored */ }
   }
   if (crumbs) {
     disposeBreadcrumbScrollController(crumbs, documentRef.defaultView);
@@ -1285,7 +1263,7 @@ function removeNavStrip(doc?: Document) {
   if (navStripCleanup) {
     try {
       navStripCleanup();
-    } catch { }
+    } catch (_err) { /* ignored */ }
     navStripCleanup = null;
   }
 }

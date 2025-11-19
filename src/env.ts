@@ -20,24 +20,24 @@ export function getPane(): any {
  * Only runs once per window (identified by the style element ID).
  */
 export function ensureGlobalStyles(doc: Document) {
-  if (doc.getElementById("thiago-folder-row-style")) return;
+  if (doc.getElementById("zfe-folder-row-style")) return;
   const style = doc.createElement("style");
-  style.id = "thiago-folder-row-style";
+  style.id = "zfe-folder-row-style";
   style.textContent = `
-    .thiago-folder-row {
+    .zfe-folder-row {
       transition: background-color 120ms ease, color 120ms ease;
     }
-    [data-thiago-items-body] [role="row"] {
+    [data-zfe-items-body] [role="row"] {
       cursor: default;
     }
-    #zotero-items-tree[data-thiago-flip="1"] .virtualized-table .row.even:not(.selected) {
+    #zotero-items-tree[data-zfe-flip="1"] .virtualized-table .row.even:not(.selected) {
       background-color: var(--material-stripe) !important;
     }
-    #zotero-items-tree[data-thiago-flip="1"] .virtualized-table .row.odd:not(.selected) {
+    #zotero-items-tree[data-zfe-flip="1"] .virtualized-table .row.odd:not(.selected) {
       background-color: var(--material-background) !important;
     }
-    .thiago-folder-row:focus,
-    .thiago-folder-row:focus-visible {
+    .zfe-folder-row:focus,
+    .zfe-folder-row:focus-visible {
       outline: none;
       box-shadow: none;
     }
