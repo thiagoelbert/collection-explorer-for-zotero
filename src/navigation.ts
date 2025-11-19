@@ -205,7 +205,8 @@ function getTreeRowType(row: Zotero.CollectionTreeRow | null): CollectionTreeRow
     return direct as CollectionTreeRowType;
   }
   for (const [type, method] of ROW_TYPE_DETECTORS) {
-    const fn = (row as any)?.[method];
+    const fn: ((this: Zotero.CollectionTreeRow) => unknown) | undefined =
+      (row as any)?.[method];
     if (typeof fn === "function") {
       try {
         if (fn.call(row)) return type;
@@ -682,7 +683,7 @@ export function updateNavStrip(selected?: any) {
     removeNavStrip(doc);
     return;
   }
-  const strip = doc.getElementById("zfe-nav-strip");
+  const strip = doc.getElementById("zfe-nav-strip") as HTMLElement | null;
   if (!strip) {
     mountNavStrip(doc);
     return updateNavStrip(selected);
