@@ -9,13 +9,6 @@ import { navigateToCollection, pushToHistory, updateNavStrip } from "../navigati
 // ========== STATE / GLOBALS ==========
 
 const ENABLE_SCROLLTOP_COMPENSATION = true;
-const FOLDER_ROW_SELECTED_BG_ACTIVE = "#4072e5";
-const FOLDER_ROW_SELECTED_BG_INACTIVE = "#d9d9d9";
-const FOLDER_ROW_SELECTED_COLOR_ACTIVE = "#fff";
-const FOLDER_ROW_SELECTED_COLOR_INACTIVE = "#222";
-const FOLDER_ROW_DEFAULT_COLOR = "#222";
-const FOLDER_ROW_HOVER_BG = "rgba(64, 114, 229, 0.08)";
-const FOLDER_ROW_ACTIVE_PRESS_BG = "rgba(64, 114, 229, 0.15)";
 
 let folderRows: HTMLElement[] = [];
 let currentGridTemplate = "auto";
@@ -23,7 +16,6 @@ let selectedFolderRow: HTMLElement | null = null;
 let itemsBodyCleanup: (() => void) | null = null;
 let itemsBodyElement: HTMLElement | null = null;
 let itemsKeyboardTarget: HTMLElement | null = null;
-let itemsPaneHasFocus = false;
 let lastRenderedCollectionID: number | null = null;
 let headerResizeObserver: ResizeObserver | null = null;
 let columnsMutationObserver: MutationObserver | null = null;
@@ -274,7 +266,7 @@ function buildFolderRow(subCol: any): HTMLElement {
   const doc = getDocument();
   const row = doc.createElement("div");
   row.setAttribute("role", "row");
-  row.className = "zfe-folder-row";
+  row.className = "zfe-folder-row row";
   row.tabIndex = 0;
 
   row.style.cssText = `
@@ -288,8 +280,6 @@ function buildFolderRow(subCol: any): HTMLElement {
     border-radius: 4px;
   `;
   row.style.gridTemplateColumns = currentGridTemplate || "auto";
-  row.dataset.stripeColor = "";
-  row.style.color = FOLDER_ROW_DEFAULT_COLOR;
 
   row.onclick = (ev) => {
     ev.preventDefault();
@@ -745,27 +735,16 @@ function attachItemsBodyListeners(body: HTMLElement) {
   const handleFocusIn = (event: FocusEvent) => {
     const target = event.target as HTMLElement | null;
     if (!target) return;
-    itemsPaneHasFocus = true;
     if (target.closest(".zfe-folder-row")) {
-      refreshSelectedFolderRowAppearance();
       return;
     }
     if (selectedFolderRow) setSelectedFolderRow(null);
-  };
-
-  const handleFocusOut = (event: FocusEvent) => {
-    const next = event.relatedTarget as HTMLElement | null;
-    if (next && body.contains(next)) return;
-    itemsPaneHasFocus = false;
-    refreshSelectedFolderRowAppearance();
   };
 
   const handleMouseDown = (event: MouseEvent) => {
     const target = event.target as HTMLElement | null;
     if (!target) return;
     if (target.closest(".zfe-folder-row")) {
-      itemsPaneHasFocus = true;
-      refreshSelectedFolderRowAppearance();
       return;
     }
     if (selectedFolderRow) setSelectedFolderRow(null);
@@ -789,12 +768,10 @@ function attachItemsBodyListeners(body: HTMLElement) {
   };
 
   body.addEventListener("focusin", handleFocusIn, true);
-  body.addEventListener("focusout", handleFocusOut, true);
   body.addEventListener("mousedown", handleMouseDown, true);
   keydownTarget?.addEventListener("keydown", handleKeyDown, true);
   itemsBodyCleanup = () => {
     body.removeEventListener("focusin", handleFocusIn, true);
-    body.removeEventListener("focusout", handleFocusOut, true);
     body.removeEventListener("mousedown", handleMouseDown, true);
     keydownTarget?.removeEventListener("keydown", handleKeyDown, true);
     itemsBodyElement = null;
@@ -814,12 +791,10 @@ function detachItemsBodyListeners() {
 
 function applyRowStriping() {
   folderRows.forEach((row, index) => {
-    const color = index % 2 === 0 ? "#fff" : "whitesmoke";
-    row.dataset.stripeColor = color;
-    row.style.borderRadius = color === "whitesmoke" ? "6px" : "4px";
-    if (row !== selectedFolderRow) {
-      applyRowBackground(row);
-    }
+    const isEven = index % 2 === 0;
+    row.classList.toggle("even", isEven);
+    row.classList.toggle("odd", !isEven);
+    row.style.borderRadius = isEven ? "4px" : "6px";
   });
 }
 
@@ -990,25 +965,21 @@ function blurItemsTreeContainer() {
 function setSelectedFolderRow(row: HTMLElement | null) {
   if (selectedFolderRow === row) return;
   if (selectedFolderRow) {
-    const previousColor = selectedFolderRow.dataset.stripeColor || "";
-    selectedFolderRow.style.background = previousColor;
-    selectedFolderRow.classList.remove("zfe-folder-row--selected");
-    selectedFolderRow.style.color = FOLDER_ROW_DEFAULT_COLOR;
+    selectedFolderRow.classList.remove("zfe-folder-row--selected", "selected");
+    selectedFolderRow.removeAttribute("aria-selected");
   }
 
   selectedFolderRow = row;
   if (!row) {
-    itemsPaneHasFocus = false;
     return;
   }
 
-  row.classList.add("zfe-folder-row--selected");
-  itemsPaneHasFocus = true;
+  row.classList.add("zfe-folder-row--selected", "selected");
+  row.setAttribute("aria-selected", "true");
   blurItemsTreeContainer();
   try {
     row.focus();
   } catch (_err) { /* ignored */ }
-  refreshSelectedFolderRowAppearance();
   clearNativeItemSelection();
 }
 
@@ -1024,29 +995,6 @@ function updateZebraFlipFlag() {
     }
   } catch (_err) { /* ignored */ }
 }
-
-function refreshSelectedFolderRowAppearance() {
-  if (!selectedFolderRow) return;
-  if (itemsPaneHasFocus) {
-    selectedFolderRow.style.background = FOLDER_ROW_SELECTED_BG_ACTIVE;
-    selectedFolderRow.style.color = FOLDER_ROW_SELECTED_COLOR_ACTIVE;
-  } else {
-    selectedFolderRow.style.background = FOLDER_ROW_SELECTED_BG_INACTIVE;
-    selectedFolderRow.style.color = FOLDER_ROW_SELECTED_COLOR_INACTIVE;
-  }
-}
-
-function applyRowBackground(row: HTMLElement) {
-  if (row === selectedFolderRow) {
-    refreshSelectedFolderRowAppearance();
-    return;
-  }
-  row.style.background = row.dataset.stripeColor || "";
-  row.style.color = FOLDER_ROW_DEFAULT_COLOR;
-  const color = (row.dataset.stripeColor || "").toLowerCase();
-  row.style.borderRadius = color === "whitesmoke" ? "6px" : "4px";
-}
-
 
 function clearNativeItemSelection() {
   try {

@@ -30,10 +30,10 @@ export function ensureGlobalStyles(doc: Document) {
     [data-zfe-items-body] [role="row"] {
       cursor: default;
     }
-    #zotero-items-tree[data-zfe-flip="1"] .virtualized-table .row.even:not(.selected) {
+    #zotero-items-tree[data-zfe-flip="1"] .virtualized-table .row.even:not(.selected):not(.zfe-folder-row) {
       background-color: var(--material-stripe) !important;
     }
-    #zotero-items-tree[data-zfe-flip="1"] .virtualized-table .row.odd:not(.selected) {
+    #zotero-items-tree[data-zfe-flip="1"] .virtualized-table .row.odd:not(.selected):not(.zfe-folder-row) {
       background-color: var(--material-background) !important;
     }
     .zfe-folder-row:focus,
