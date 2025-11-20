@@ -25,3 +25,6 @@ tmpOldHooks.ts
 
 #Cspell
 cspell.json
+
+# Images
+*.png
