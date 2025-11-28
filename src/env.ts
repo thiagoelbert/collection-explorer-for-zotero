@@ -27,6 +27,10 @@ export function ensureGlobalStyles(doc: Document) {
     .zfe-folder-row {
       transition: background-color 120ms ease, color 120ms ease;
     }
+    .zfe-folder-row--dragover {
+      background-color: #e6f0ff;
+      box-shadow: inset 0 0 0 1px #5c8df6;
+    }
     [data-zfe-items-body] [role="row"] {
       cursor: default;
     }

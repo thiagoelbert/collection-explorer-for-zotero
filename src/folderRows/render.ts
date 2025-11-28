@@ -13,6 +13,9 @@ const ENABLE_SCROLLTOP_COMPENSATION = true;
 let folderRows: HTMLElement[] = [];
 let currentGridTemplate = "auto";
 let selectedFolderRow: HTMLElement | null = null;
+let currentCollectionID: number | null = null;
+let draggingFromItemsPane = false;
+let lastDraggedItemIDs: number[] = [];
 let itemsBodyCleanup: (() => void) | null = null;
 let itemsBodyElement: HTMLElement | null = null;
 let itemsKeyboardTarget: HTMLElement | null = null;
@@ -24,6 +27,7 @@ let windowResizeCleanup: (() => void) | null = null;
 let extraTopOffset = 0;
 let extraTopOffsetMeasureHandle: number | null = null;
 let scrollCompensationState: ScrollCompensationState | null = null;
+const FOLDER_ROW_DROP_HOVER_CLASS = "zfe-folder-row--dragover";
 
 /** Exposes which collection ID the injected rows currently represent. */
 export function getLastRenderedCollectionID() {
@@ -161,6 +165,7 @@ export function renderFolderRowsForCurrentCollection() {
   const treeRow = getSelectedTreeRow(pane);
   const previousCollectionID = lastRenderedCollectionID;
   lastRenderedCollectionID = computeSelectionContextID(pane, selected, treeRow);
+  currentCollectionID = selected?.id ?? null;
 
   // Tear down previous UI
   removeFolderRows();
@@ -231,7 +236,7 @@ function renderFolderRows(subcollections: any[], options?: { resetScroll?: boole
   const fragment = doc.createDocumentFragment();
   const createdRows: HTMLElement[] = [];
   for (const sub of subcollections) {
-    const row = buildFolderRow(sub);
+    const row = buildFolderRow(sub, currentCollectionID);
     createdRows.push(row);
     fragment.appendChild(row);
   }
@@ -262,7 +267,7 @@ function renderFolderRows(subcollections: any[], options?: { resetScroll?: boole
 }
 
 /** One folder-like row aligned to columns; opens on click/Enter/Space */
-function buildFolderRow(subCol: any): HTMLElement {
+function buildFolderRow(subCol: any, parentCollectionID: number | null): HTMLElement {
   const doc = getDocument();
   const row = doc.createElement("div");
   row.setAttribute("role", "row");
@@ -280,6 +285,10 @@ function buildFolderRow(subCol: any): HTMLElement {
     border-radius: 4px;
   `;
   row.style.gridTemplateColumns = currentGridTemplate || "auto";
+  row.dataset.collectionId = `${subCol.id ?? ""}`;
+  if (parentCollectionID != null) {
+    row.dataset.parentCollectionId = `${parentCollectionID}`;
+  }
 
   row.onclick = (ev) => {
     ev.preventDefault();
@@ -313,6 +322,8 @@ function buildFolderRow(subCol: any): HTMLElement {
     }
   });
 
+  wireFolderRowDragAndDrop(row, subCol.id, parentCollectionID);
+
   const columnCount = getCurrentColumnCount();
   for (let i = 0; i < columnCount; i++) {
     const cell = doc.createElement("div");
@@ -338,6 +349,273 @@ function buildFolderRow(subCol: any): HTMLElement {
   }
 
   return row;
+}
+
+function wireFolderRowDragAndDrop(
+  row: HTMLElement,
+  targetCollectionID: number | null,
+  sourceCollectionID: number | null,
+) {
+  if (typeof targetCollectionID !== "number") return;
+
+  const handleEnter = (event: DragEvent) => {
+    if (!canAcceptItemDrag(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setDropEffectMove(event);
+    row.classList.add(FOLDER_ROW_DROP_HOVER_CLASS);
+  };
+
+  const handleOver = (event: DragEvent) => {
+    if (!canAcceptItemDrag(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setDropEffectMove(event);
+    row.classList.add(FOLDER_ROW_DROP_HOVER_CLASS);
+  };
+
+  const handleLeave = () => {
+    row.classList.remove(FOLDER_ROW_DROP_HOVER_CLASS);
+  };
+
+  const handleDrop = async (event: DragEvent) => {
+    if (!canAcceptItemDrag(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    clearFolderRowDropStates();
+    const itemIDs = getDraggedItemIDs(event);
+    if (!itemIDs.length) return;
+    try {
+      await moveItemsToCollection(itemIDs, targetCollectionID, sourceCollectionID);
+    } catch (_err) { /* ignored */ }
+  };
+
+  row.addEventListener("dragenter", handleEnter);
+  row.addEventListener("dragover", handleOver);
+  row.addEventListener("dragleave", handleLeave);
+  row.addEventListener("drop", handleDrop);
+}
+
+function clearFolderRowDropStates() {
+  folderRows.forEach((row) => row.classList.remove(FOLDER_ROW_DROP_HOVER_CLASS));
+}
+
+function setDropEffectMove(event: DragEvent) {
+  const dt = event.dataTransfer;
+  if (!dt) return;
+  try {
+    dt.dropEffect = "move";
+  } catch (_err) { /* ignored */ }
+}
+
+function canAcceptItemDrag(event: DragEvent | null): boolean {
+  if (draggingFromItemsPane || lastDraggedItemIDs.length) return true;
+  const dt = event?.dataTransfer;
+  if (dt?.types) {
+    for (const type of Array.from(dt.types)) {
+      const lower = `${type}`.toLowerCase();
+      if (lower.startsWith("zotero/") || lower.includes("zotero-item") || lower.includes("zotero/items")) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function getDraggedItemIDs(event?: DragEvent | null): number[] {
+  const fromTransfer = extractItemIDsFromDataTransfer(event?.dataTransfer ?? null);
+  if (fromTransfer.length) return fromTransfer;
+  if (lastDraggedItemIDs.length) return [...lastDraggedItemIDs];
+  return getSelectedItemIDs();
+}
+
+function extractItemIDsFromDataTransfer(dt: DataTransfer | null): number[] {
+  if (!dt) return [];
+  const seenTypes = new Set<string>();
+  const types = Array.from(dt.types || []);
+
+  // Try every advertised type first.
+  for (const type of types) {
+    seenTypes.add(type);
+    const ids = safelyParseIDs(dt, type);
+    if (ids.length) return ids;
+  }
+
+  // Fallback: known/legacy Zotero types.
+  const candidateTypes = [
+    "zotero/items",
+    "zotero/item",
+    "zotero/items-json",
+    "application/x-zotero-item-ids",
+    "application/x-zotero-items",
+    "application/vnd.zotero.items+json",
+    "application/vnd.zotero.item+json",
+    "text/x-zotero-item",
+    "text/x-zotero-items",
+    "application/json",
+    "text/plain",
+  ];
+  for (const type of candidateTypes) {
+    if (seenTypes.has(type)) continue;
+    const ids = safelyParseIDs(dt, type);
+    if (ids.length) return ids;
+  }
+  return [];
+}
+
+function safelyParseIDs(dt: DataTransfer, type: string): number[] {
+  let raw = "";
+  try {
+    raw = dt.getData(type);
+  } catch (_err) {
+    raw = "";
+  }
+  return parseItemIDPayload(raw);
+}
+
+function parseItemIDPayload(raw: string | null | undefined): number[] {
+  if (!raw) return [];
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) return normalizeItemIDs(parsed);
+    if (parsed && Array.isArray((parsed as any).items)) {
+      return normalizeItemIDs((parsed as any).items);
+    }
+    if (parsed && Array.isArray((parsed as any).ids)) {
+      return normalizeItemIDs((parsed as any).ids);
+    }
+  } catch (_err) {
+    // fall through to text parsing
+  }
+
+  const matches = trimmed.match(/\d+/g);
+  return matches ? normalizeItemIDs(matches) : [];
+}
+
+function getSelectedItemIDs(): number[] {
+  const pane = getPane();
+  if (!pane) return [];
+
+  try {
+    const idsFromPane = pane.getSelectedItems?.(true);
+    if (Array.isArray(idsFromPane)) {
+      return normalizeItemIDs(idsFromPane);
+    }
+  } catch (_err) {
+    // ignored
+  }
+
+  try {
+    const items = pane.getSelectedItems?.();
+    if (Array.isArray(items)) {
+      const ids = items.map((item: any) => (typeof item === "number" ? item : item?.id));
+      return normalizeItemIDs(ids);
+    }
+  } catch (_err) {
+    // ignored
+  }
+
+  try {
+    const itemsView = pane.itemsView;
+    const idsFromView = itemsView?.getSelectedItems?.(true);
+    if (Array.isArray(idsFromView)) {
+      return normalizeItemIDs(idsFromView);
+    }
+  } catch (_err) {
+    // ignored
+  }
+
+  return [];
+}
+
+function normalizeItemIDs(value: any): number[] {
+  const unique = new Set<number>();
+  const maybeArray = Array.isArray(value) ? value : [value];
+  for (const entry of maybeArray) {
+    const asNumber = typeof entry === "number" ? entry : Number(entry);
+    if (Number.isFinite(asNumber)) unique.add(Math.trunc(asNumber));
+  }
+  return Array.from(unique);
+}
+
+async function moveItemsToCollection(
+  itemIDs: number[],
+  targetCollectionID: number,
+  sourceCollectionID: number | null,
+) {
+  const ids = normalizeItemIDs(itemIDs);
+  if (!ids.length) return;
+
+  const targetCollection = Zotero.Collections.get(targetCollectionID);
+  if (!targetCollection) return;
+
+  const liveSelectedID =
+    getPane()?.getSelectedCollection?.()?.id ?? null;
+  const sourceID =
+    (liveSelectedID && liveSelectedID !== targetCollectionID
+      ? liveSelectedID
+      : null) ??
+    (sourceCollectionID && sourceCollectionID !== targetCollectionID
+      ? sourceCollectionID
+      : null);
+
+  const runAdd = async () => {
+    const collectionsAPI = Zotero.Collections as any;
+    if (typeof targetCollection.addItems === "function") {
+      await Promise.resolve(targetCollection.addItems(ids));
+      return;
+    }
+    if (collectionsAPI && typeof collectionsAPI.addItems === "function") {
+      await Promise.resolve(collectionsAPI.addItems(targetCollectionID, ids));
+    }
+  };
+
+  const runRemove = async () => {
+    if (!sourceID) return;
+    await removeItemsFromCollection(ids, sourceID);
+  };
+
+  if (Zotero.DB?.executeTransaction) {
+    await Zotero.DB.executeTransaction(async () => {
+      await runAdd();
+      await runRemove();
+    });
+  } else {
+    await runAdd();
+    await runRemove();
+  }
+
+  draggingFromItemsPane = false;
+  lastDraggedItemIDs = [];
+
+  try {
+    rerenderTrigger(140);
+  } catch (_err) { /* ignored */ }
+}
+
+async function removeItemsFromCollection(ids: number[], sourceCollectionID: number) {
+  const sourceCollection = Zotero.Collections.get(sourceCollectionID);
+  if (sourceCollection && typeof sourceCollection.removeItems === "function") {
+    await Promise.resolve(sourceCollection.removeItems(ids));
+  }
+
+  const collectionsAPI = Zotero.Collections as any;
+  if (collectionsAPI && typeof collectionsAPI.removeItems === "function") {
+    await Promise.resolve(collectionsAPI.removeItems(sourceCollectionID, ids));
+  }
+
+  // Extra safety: per-item removal so we don't leave behind copies.
+  for (const id of ids) {
+    try {
+      const item = Zotero.Items?.get?.(id);
+      if (item && typeof item.removeFromCollection === "function") {
+        item.removeFromCollection(sourceCollectionID);
+      }
+    } catch (_err) { /* ignored */ }
+  }
 }
 
 // ========== COLUMN SYNC / OBSERVERS ==========
@@ -767,12 +1045,32 @@ function attachItemsBodyListeners(body: HTMLElement) {
     if (lastFolder) setSelectedFolderRow(lastFolder);
   };
 
+  const handleItemsDragStart = (event: DragEvent) => {
+    const target = event.target as HTMLElement | null;
+    if (!target) return;
+    const row = (target.closest(NATIVE_ROW_SELECTOR) as HTMLElement | null) || null;
+    if (!row) return;
+    draggingFromItemsPane = true;
+    lastDraggedItemIDs = getSelectedItemIDs();
+    clearFolderRowDropStates();
+  };
+
+  const handleItemsDragEnd = (_event: DragEvent) => {
+    draggingFromItemsPane = false;
+    lastDraggedItemIDs = [];
+    clearFolderRowDropStates();
+  };
+
   body.addEventListener("focusin", handleFocusIn, true);
   body.addEventListener("mousedown", handleMouseDown, true);
+  body.addEventListener("dragstart", handleItemsDragStart, true);
+  body.addEventListener("dragend", handleItemsDragEnd, true);
   keydownTarget?.addEventListener("keydown", handleKeyDown, true);
   itemsBodyCleanup = () => {
     body.removeEventListener("focusin", handleFocusIn, true);
     body.removeEventListener("mousedown", handleMouseDown, true);
+    body.removeEventListener("dragstart", handleItemsDragStart, true);
+    body.removeEventListener("dragend", handleItemsDragEnd, true);
     keydownTarget?.removeEventListener("keydown", handleKeyDown, true);
     itemsBodyElement = null;
     itemsKeyboardTarget = null;
@@ -1106,6 +1404,7 @@ function findItemsBody(root: HTMLElement): HTMLElement | null {
  * Removes every injected row and associated listeners/timers so the UI can rebuild cleanly.
  */
 export function removeFolderRows() {
+  clearFolderRowDropStates();
   folderRows.forEach((row) => {
     try {
       row.remove();
@@ -1113,6 +1412,10 @@ export function removeFolderRows() {
   });
   folderRows = [];
   selectedFolderRow = null;
+  currentCollectionID = null;
+  draggingFromItemsPane = false;
+  lastDraggedItemIDs = [];
+  clearFolderRowDropStates();
   detachItemsBodyListeners();
   detachFolderRowsResizeObserver();
   if (extraTopOffsetMeasureHandle) {
