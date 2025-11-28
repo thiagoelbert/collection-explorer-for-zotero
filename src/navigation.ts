@@ -50,6 +50,7 @@ type BreadcrumbNode = {
 
 // Breadcrumb overflow management constants.
 const BREADCRUMB_TAIL_CLAMP_CLASS = "zfe-crumb-tail-clamped";
+const BREADCRUMB_DROP_CLASS = "zfe-crumb-drop-target";
 const BREADCRUMB_SCROLL_SETTLE_DELAY = 200;
 const BREADCRUMB_RESIZE_RELEASE_TIMEOUT = 1200;
 const NAV_STRIP_SUPPRESSED_ROW_TYPES = new Set<CollectionTreeRowType>([
@@ -393,6 +394,10 @@ function ensureNavStripCSS(doc: Document) {
     user-select:none;
     margin:0 4px;
   }
+  .zfe-crumb.${BREADCRUMB_DROP_CLASS} {
+    background: #e6f0ff;
+    box-shadow: inset 0 0 0 1px #5c8df6;
+  }
   .zfe-nav-overflow-menu {
     position:fixed;
     display:flex;
@@ -733,6 +738,9 @@ export function updateNavStrip(selected?: any) {
     } else {
       crumb.removeAttribute("data-zfe-row-type");
     }
+
+    attachBreadcrumbDragHandlers(crumb, seg);
+
     crumb.addEventListener("click", () => {
       if (activateBreadcrumbSegment(seg)) {
         deps.scheduleRerender(120);
@@ -770,6 +778,242 @@ function activateBreadcrumbSegment(seg: PathSeg): boolean {
 function canActivateBreadcrumbSegment(seg: PathSeg): boolean {
   if (seg.collectionID != null) return true;
   return Boolean(seg.rowType);
+}
+
+function attachBreadcrumbDragHandlers(crumb: HTMLElement, seg: PathSeg) {
+  if (seg.collectionID == null) return;
+  const targetCollectionID = seg.collectionID;
+
+  const handleEnter = (ev: DragEvent) => {
+    if (!canAcceptBreadcrumbDrop(ev)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    setDropEffectMove(ev);
+    crumb.classList.add(BREADCRUMB_DROP_CLASS);
+  };
+
+  const handleOver = (ev: DragEvent) => {
+    if (!canAcceptBreadcrumbDrop(ev)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    setDropEffectMove(ev);
+    crumb.classList.add(BREADCRUMB_DROP_CLASS);
+  };
+
+  const handleLeave = () => {
+    crumb.classList.remove(BREADCRUMB_DROP_CLASS);
+  };
+
+  const handleDrop = async (ev: DragEvent) => {
+    if (!canAcceptBreadcrumbDrop(ev)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    crumb.classList.remove(BREADCRUMB_DROP_CLASS);
+    const itemIDs = getDraggedItemIDs(ev);
+    if (!itemIDs.length) return;
+    const sourceID = getPane()?.getSelectedCollection?.()?.id ?? null;
+    await moveItemsToCollection(itemIDs, targetCollectionID, sourceID);
+  };
+
+  crumb.addEventListener("dragenter", handleEnter);
+  crumb.addEventListener("dragover", handleOver);
+  crumb.addEventListener("dragleave", handleLeave);
+  crumb.addEventListener("drop", handleDrop);
+}
+
+function canAcceptBreadcrumbDrop(event: DragEvent | null): boolean {
+  if (!event) return false;
+  const dt = event.dataTransfer;
+  if (dt?.types && Array.from(dt.types).some(t => `${t}`.toLowerCase().includes("zotero"))) {
+    return true;
+  }
+  return getDraggedItemIDs(event).length > 0;
+}
+
+function setDropEffectMove(ev: DragEvent) {
+  try {
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+  } catch (_err) {
+    // ignored
+  }
+}
+
+function getDraggedItemIDs(event?: DragEvent | null): number[] {
+  const fromTransfer = extractItemIDsFromDataTransfer(event?.dataTransfer ?? null);
+  if (fromTransfer.length) return fromTransfer;
+  return getSelectedItemIDs();
+}
+
+function extractItemIDsFromDataTransfer(dt: DataTransfer | null): number[] {
+  if (!dt) return [];
+  const seenTypes = new Set<string>();
+  const types = Array.from(dt.types || []);
+
+  for (const type of types) {
+    seenTypes.add(type);
+    const ids = safelyParseIDs(dt, type);
+    if (ids.length) return ids;
+  }
+
+  const candidateTypes = [
+    "zotero/items",
+    "zotero/item",
+    "zotero/items-json",
+    "application/x-zotero-item-ids",
+    "application/x-zotero-items",
+    "application/vnd.zotero.items+json",
+    "application/vnd.zotero.item+json",
+    "text/x-zotero-item",
+    "text/x-zotero-items",
+    "application/json",
+    "text/plain",
+  ];
+  for (const type of candidateTypes) {
+    if (seenTypes.has(type)) continue;
+    const ids = safelyParseIDs(dt, type);
+    if (ids.length) return ids;
+  }
+  return [];
+}
+
+function safelyParseIDs(dt: DataTransfer, type: string): number[] {
+  let raw = "";
+  try {
+    raw = dt.getData(type);
+  } catch (_err) {
+    raw = "";
+  }
+  return parseItemIDPayload(raw);
+}
+
+function parseItemIDPayload(raw: string | null | undefined): number[] {
+  if (!raw) return [];
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) return normalizeItemIDs(parsed);
+    if (parsed && Array.isArray((parsed as any).items)) {
+      return normalizeItemIDs((parsed as any).items);
+    }
+    if (parsed && Array.isArray((parsed as any).ids)) {
+      return normalizeItemIDs((parsed as any).ids);
+    }
+  } catch (_err) {
+    // fall through
+  }
+
+  const matches = trimmed.match(/\d+/g);
+  return matches ? normalizeItemIDs(matches) : [];
+}
+
+function getSelectedItemIDs(): number[] {
+  const pane = getPane();
+  if (!pane) return [];
+
+  try {
+    const idsFromPane = pane.getSelectedItems?.(true);
+    if (Array.isArray(idsFromPane)) {
+      return normalizeItemIDs(idsFromPane);
+    }
+  } catch (_err) { /* ignored */ }
+
+  try {
+    const items = pane.getSelectedItems?.();
+    if (Array.isArray(items)) {
+      const ids = items.map((item: any) => (typeof item === "number" ? item : item?.id));
+      return normalizeItemIDs(ids);
+    }
+  } catch (_err) { /* ignored */ }
+
+  try {
+    const itemsView = pane.itemsView;
+    const idsFromView = itemsView?.getSelectedItems?.(true);
+    if (Array.isArray(idsFromView)) {
+      return normalizeItemIDs(idsFromView);
+    }
+  } catch (_err) { /* ignored */ }
+
+  return [];
+}
+
+function normalizeItemIDs(value: any): number[] {
+  const unique = new Set<number>();
+  const maybeArray = Array.isArray(value) ? value : [value];
+  for (const entry of maybeArray) {
+    const asNumber = typeof entry === "number" ? entry : Number(entry);
+    if (Number.isFinite(asNumber)) unique.add(Math.trunc(asNumber));
+  }
+  return Array.from(unique);
+}
+
+async function moveItemsToCollection(
+  itemIDs: number[],
+  targetCollectionID: number,
+  sourceCollectionID: number | null,
+) {
+  const ids = normalizeItemIDs(itemIDs);
+  if (!ids.length) return;
+
+  const targetCollection = Zotero.Collections.get(targetCollectionID);
+  if (!targetCollection) return;
+
+  const liveSelectedID = getPane()?.getSelectedCollection?.()?.id ?? null;
+  const sourceID =
+    (liveSelectedID && liveSelectedID !== targetCollectionID ? liveSelectedID : null) ??
+    (sourceCollectionID && sourceCollectionID !== targetCollectionID ? sourceCollectionID : null);
+
+  const runAdd = async () => {
+    const collectionsAPI = Zotero.Collections as any;
+    if (typeof targetCollection.addItems === "function") {
+      await Promise.resolve(targetCollection.addItems(ids));
+      return;
+    }
+    if (collectionsAPI && typeof collectionsAPI.addItems === "function") {
+      await Promise.resolve(collectionsAPI.addItems(targetCollectionID, ids));
+    }
+  };
+
+  const runRemove = async () => {
+    if (!sourceID) return;
+    await removeItemsFromCollection(ids, sourceID);
+  };
+
+  if (Zotero.DB?.executeTransaction) {
+    await Zotero.DB.executeTransaction(async () => {
+      await runAdd();
+      await runRemove();
+    });
+  } else {
+    await runAdd();
+    await runRemove();
+  }
+
+  try {
+    deps.scheduleRerender(140);
+  } catch (_err) { /* ignored */ }
+}
+
+async function removeItemsFromCollection(ids: number[], sourceCollectionID: number) {
+  const sourceCollection = Zotero.Collections.get(sourceCollectionID);
+  if (sourceCollection && typeof sourceCollection.removeItems === "function") {
+    await Promise.resolve(sourceCollection.removeItems(ids));
+  }
+
+  const collectionsAPI = Zotero.Collections as any;
+  if (collectionsAPI && typeof collectionsAPI.removeItems === "function") {
+    await Promise.resolve(collectionsAPI.removeItems(sourceCollectionID, ids));
+  }
+
+  for (const id of ids) {
+    try {
+      const item = Zotero.Items?.get?.(id);
+      if (item && typeof item.removeFromCollection === "function") {
+        item.removeFromCollection(sourceCollectionID);
+      }
+    } catch (_err) { /* ignored */ }
+  }
 }
 
 /** Enables/disables back/forward buttons depending on available history. */
