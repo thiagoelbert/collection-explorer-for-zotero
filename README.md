@@ -7,25 +7,25 @@ whenever you open a collection, its **subcollections appear as folder-like rows*
 
 ---
 
-## ✨ Features
+## Features
 
-- 🗂 **Explorer-style navigation**  
+- **Explorer-style navigation**  
   Subcollections appear as clickable “folder rows” above items.
 
-- 📌 **Back / Forward / Up navigation strip**  
+- **Back / Forward / Up navigation strip**  
   Includes history, breadcrumbs, path editing, and overflow handling in an optional navigation bar.
 
-- 🎨 **Fully aligned with Zotero’s native UI**  
+- **Fully aligned with Zotero’s native UI**  
   Folder rows use the exact same grid as the item table.
 
-- 🧩 **Non-invasive**  
+- **Non-invasive**  
   Doesn’t replace Zotero components; all injected UI is mounted/unmounted cleanly.
 
-- 🧭 **Works great for large hierarchical libraries**
+- **Works great for large hierarchical libraries**
 
 ---
 
-## 📷 Screenshots
+## Screenshots
 
 <p align="center">
 
@@ -62,7 +62,7 @@ If you find bugs or want to improve the code, PRs are extremely welcome.
 
 ---
 
-## 📦 Installation
+## Installation
 
 Download the latest `.xpi` from the **Releases** page of this repository.
 
@@ -70,22 +70,22 @@ In Zotero:
 **Tools → Add-ons → Gear icon → Install Add-on From File…**  
 Select the `.xpi` and restart if prompted.
 
-## ✅ Requirements
+## Requirements
 
 - **Zotero**: 7.0.0 or newer (tested on 7.0.26)
 - **Windows / macOS / Linux** (UI is platform-agnostic)
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 PRs welcome!
 
-## 📄 License
+## License
 
 AGPL-3.0 (same as the template). See `LICENSE`.
 
-## 🙏 Credits
+## Credits
 
 Built with:
 
