@@ -33,18 +33,6 @@ const FOLDER_ROW_DROP_HOVER_CLASS = "zfe-folder-row--dragover";
 const COLLECTION_DRAG_MIME = "application/x-zfe-collection-id";
 let forceResetScrollTop = false;
 
-function debugLog(message: string, ...args: any[]) {
-  try {
-    if (typeof Zotero !== "undefined" && typeof Zotero.debug === "function") {
-      Zotero.debug(`[ZFE] ${message} ${args.map(String).join(" ")}`);
-      return;
-    }
-  } catch (_err) { /* ignored */ }
-  try {
-    console.log("[ZFE]", message, ...args);
-  } catch (_err) { /* ignored */ }
-}
-
 /** Exposes which collection ID the injected rows currently represent. */
 export function getLastRenderedCollectionID() {
   return lastRenderedCollectionID;
@@ -407,7 +395,6 @@ function wireFolderRowDragAndDrop(
     event.stopPropagation();
     clearFolderRowDropStates();
     if (allowCollection && droppingCollectionID != null) {
-      debugLog("Drop collection on folder row", { from: droppingCollectionID, to: targetCollectionID });
       await moveCollectionToParent(droppingCollectionID, targetCollectionID);
       return;
     }
@@ -415,7 +402,6 @@ function wireFolderRowDragAndDrop(
       const itemIDs = getDraggedItemIDs(event);
       if (!itemIDs.length) return;
       try {
-        debugLog("Drop items on folder row", { items: itemIDs, to: targetCollectionID });
         await moveItemsToCollection(itemIDs, targetCollectionID, sourceCollectionID);
       } catch (_err) { /* ignored */ }
     }
@@ -698,8 +684,6 @@ async function moveCollectionToParent(collectionID: number, newParentID: number)
   const currentParent = collection.parentID ?? null;
   if (currentParent === newParentID) return;
 
-  debugLog("moveCollectionToParent start", { collectionID, currentParent, newParentID });
-
   // Try Zotero's own move helper if available (handles UI + caches)
   try {
     const win = Zotero.getMainWindow?.();
@@ -718,14 +702,10 @@ async function moveCollectionToParent(collectionID: number, newParentID: number)
       );
       refreshCollectionsTree(collectionID);
       rerenderTrigger(200);
-      debugLog("moveCollectionToParent via ZoteroPane_Local.moveCollection", {
-        collectionID,
-        newParentID,
-      });
       return;
     }
   } catch (err) {
-    debugLog("moveCollectionToParent pane helper failed", err);
+    /* ignored */
   }
 
   const applyParent = async () => {
@@ -748,9 +728,8 @@ async function moveCollectionToParent(collectionID: number, newParentID: number)
       } else if (typeof collection.save === "function") {
         await collection.save({ skipEditCheck: true } as any);
       }
-      debugLog("moveCollectionToParent saved", { collectionID, newParentID });
     } catch (err) {
-      debugLog("moveCollectionToParent error", err);
+      /* ignored */
     }
   };
 
@@ -760,7 +739,6 @@ async function moveCollectionToParent(collectionID: number, newParentID: number)
     refreshCollectionsTree(collectionID);
     forceResetScrollTop = true;
     rerenderTrigger(200);
-    debugLog("moveCollectionToParent rerender requested", { collectionID, newParentID });
   } catch (_err) { /* ignored */ }
 }
 
@@ -779,9 +757,7 @@ function refreshCollectionsTree(movedCollectionID: number) {
     } else if (tree && typeof (tree as any).invalidate === "function") {
       (tree as any).invalidate();
     }
-  } catch (err) {
-    debugLog("refreshCollectionsTree error", err);
-  }
+  } catch (_err) { /* ignored */ }
 }
 
 function updateCollectionParentCaches(
@@ -802,7 +778,6 @@ function updateCollectionParentCaches(
         newParent._childCollections.add(collectionID);
       }
     }
-    debugLog("updateCollectionParentCaches", { collectionID, oldParentID, newParentID });
   } catch (_err) { /* ignored */ }
 }
 

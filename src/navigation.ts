@@ -16,18 +16,6 @@ const deps: NavigationDeps = {
   scheduleRerender: () => { },
 };
 
-function debugLog(message: string, ...args: any[]) {
-  try {
-    if (typeof Zotero !== "undefined" && typeof Zotero.debug === "function") {
-      Zotero.debug(`[ZFE] ${message} ${args.map(String).join(" ")}`);
-      return;
-    }
-  } catch (_err) { /* ignored */ }
-  try {
-    console.log("[ZFE]", message, ...args);
-  } catch (_err) { /* ignored */ }
-}
-
 /**
  * Allows consumers to supply their own implementations (mostly useful in tests).
  */
@@ -803,11 +791,6 @@ function attachBreadcrumbDragHandlers(crumb: HTMLElement, seg: PathSeg) {
     ev.stopPropagation();
     setDropEffectMove(ev);
     crumb.classList.add(BREADCRUMB_DROP_CLASS);
-    debugLog("breadcrumb dragenter", {
-      target: targetCollectionID,
-      types: Array.from(ev.dataTransfer?.types ?? []),
-      col: getDraggedCollectionID(ev),
-    });
   };
 
   const handleOver = (ev: DragEvent) => {
@@ -828,14 +811,7 @@ function attachBreadcrumbDragHandlers(crumb: HTMLElement, seg: PathSeg) {
     ev.stopPropagation();
     crumb.classList.remove(BREADCRUMB_DROP_CLASS);
     const collectionID = getDraggedCollectionID(ev);
-    debugLog("breadcrumb drop", {
-      target: targetCollectionID,
-      from: collectionID,
-      types: Array.from(ev.dataTransfer?.types ?? []),
-      text: safeReadDT(ev.dataTransfer, "text/plain"),
-    });
     if (collectionID != null && collectionID !== targetCollectionID && !isAncestorCollection(collectionID, targetCollectionID)) {
-      debugLog("Drop collection on breadcrumb", { from: collectionID, to: targetCollectionID });
       await moveCollectionToParent(collectionID, targetCollectionID);
       return;
     }
@@ -843,7 +819,6 @@ function attachBreadcrumbDragHandlers(crumb: HTMLElement, seg: PathSeg) {
     const itemIDs = getDraggedItemIDs(ev);
     if (!itemIDs.length) return;
     const sourceID = getPane()?.getSelectedCollection?.()?.id ?? null;
-    debugLog("Drop items on breadcrumb", { items: itemIDs, to: targetCollectionID });
     await moveItemsToCollection(itemIDs, targetCollectionID, sourceID);
   };
 
@@ -1076,8 +1051,6 @@ async function moveCollectionToParent(collectionID: number, newParentID: number)
   const currentParent = collection.parentID ?? null;
   if (currentParent === newParentID) return;
 
-  debugLog("moveCollectionToParent start", { collectionID, currentParent, newParentID });
-
   try {
     const win = Zotero.getMainWindow?.();
     const mover =
@@ -1095,14 +1068,10 @@ async function moveCollectionToParent(collectionID: number, newParentID: number)
       );
       refreshCollectionsTree(collectionID);
       deps.scheduleRerender(200);
-      debugLog("moveCollectionToParent via ZoteroPane_Local.moveCollection", {
-        collectionID,
-        newParentID,
-      });
       return;
     }
   } catch (err) {
-    debugLog("moveCollectionToParent pane helper failed", err);
+    /* ignored */
   }
 
   const applyParent = async () => {
@@ -1125,9 +1094,8 @@ async function moveCollectionToParent(collectionID: number, newParentID: number)
       } else if (typeof collection.save === "function") {
         await collection.save({ skipEditCheck: true } as any);
       }
-      debugLog("moveCollectionToParent saved", { collectionID, newParentID });
     } catch (err) {
-      debugLog("moveCollectionToParent error", err);
+      /* ignored */
     }
   };
 
@@ -1137,7 +1105,6 @@ async function moveCollectionToParent(collectionID: number, newParentID: number)
     refreshCollectionsTree(collectionID);
     deps.scheduleRerender(200);
     scrollItemsBodyToTopSoon();
-    debugLog("moveCollectionToParent rerender requested", { collectionID, newParentID });
   } catch (_err) { /* ignored */ }
 }
 
@@ -1159,7 +1126,6 @@ function updateCollectionParentCaches(
         newParent._childCollections.add(collectionID);
       }
     }
-    debugLog("updateCollectionParentCaches", { collectionID, oldParentID, newParentID });
   } catch (_err) { /* ignored */ }
 }
 
@@ -1178,9 +1144,7 @@ function refreshCollectionsTree(movedCollectionID: number) {
     } else if (tree && typeof (tree as any).invalidate === "function") {
       (tree as any).invalidate();
     }
-  } catch (err) {
-    debugLog("refreshCollectionsTree error", err);
-  }
+  } catch (_err) { /* ignored */ }
 }
 
 function scrollItemsBodyToTopSoon() {
