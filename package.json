@@ -1,7 +1,7 @@
 {
   "name": "collection-explorer-for-zotero",
   "type": "module",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Show subcollections as folder-like rows at the top of the items list, for Explorer-style navigation.",
   "config": {
     "addonName": "Collection Explorer for Zotero",
