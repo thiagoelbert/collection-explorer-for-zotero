@@ -1082,11 +1082,17 @@ async function moveCollectionToParent(collectionID: number, newParentID: number)
     const win = Zotero.getMainWindow?.();
     const mover =
       (win as any)?.ZoteroPane?.moveCollection ||
-      (ZoteroPane_Local as any)?.moveCollection ||
+      (globalThis as any)?.ZoteroPane_Local?.moveCollection ||
       (getPane() as any)?.moveCollection ||
       null;
     if (typeof mover === "function") {
-      await Promise.resolve(mover.call((win as any)?.ZoteroPane ?? ZoteroPane_Local ?? getPane(), collectionID, newParentID));
+      await Promise.resolve(
+        mover.call(
+          (win as any)?.ZoteroPane ?? (globalThis as any)?.ZoteroPane_Local ?? getPane(),
+          collectionID,
+          newParentID,
+        ),
+      );
       refreshCollectionsTree(collectionID);
       deps.scheduleRerender(200);
       debugLog("moveCollectionToParent via ZoteroPane_Local.moveCollection", {
