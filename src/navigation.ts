@@ -16,6 +16,18 @@ const deps: NavigationDeps = {
   scheduleRerender: () => { },
 };
 
+function debugLog(message: string, ...args: any[]) {
+  try {
+    if (typeof Zotero !== "undefined" && typeof Zotero.debug === "function") {
+      Zotero.debug(`[ZFE] ${message} ${args.map(String).join(" ")}`);
+      return;
+    }
+  } catch (_err) { /* ignored */ }
+  try {
+    console.log("[ZFE]", message, ...args);
+  } catch (_err) { /* ignored */ }
+}
+
 /**
  * Allows consumers to supply their own implementations (mostly useful in tests).
  */
@@ -51,6 +63,7 @@ type BreadcrumbNode = {
 // Breadcrumb overflow management constants.
 const BREADCRUMB_TAIL_CLAMP_CLASS = "zfe-crumb-tail-clamped";
 const BREADCRUMB_DROP_CLASS = "zfe-crumb-drop-target";
+const COLLECTION_DRAG_MIME = "application/x-zfe-collection-id";
 const BREADCRUMB_SCROLL_SETTLE_DELAY = 200;
 const BREADCRUMB_RESIZE_RELEASE_TIMEOUT = 1200;
 const NAV_STRIP_SUPPRESSED_ROW_TYPES = new Set<CollectionTreeRowType>([
@@ -790,6 +803,11 @@ function attachBreadcrumbDragHandlers(crumb: HTMLElement, seg: PathSeg) {
     ev.stopPropagation();
     setDropEffectMove(ev);
     crumb.classList.add(BREADCRUMB_DROP_CLASS);
+    debugLog("breadcrumb dragenter", {
+      target: targetCollectionID,
+      types: Array.from(ev.dataTransfer?.types ?? []),
+      col: getDraggedCollectionID(ev),
+    });
   };
 
   const handleOver = (ev: DragEvent) => {
@@ -809,9 +827,23 @@ function attachBreadcrumbDragHandlers(crumb: HTMLElement, seg: PathSeg) {
     ev.preventDefault();
     ev.stopPropagation();
     crumb.classList.remove(BREADCRUMB_DROP_CLASS);
+    const collectionID = getDraggedCollectionID(ev);
+    debugLog("breadcrumb drop", {
+      target: targetCollectionID,
+      from: collectionID,
+      types: Array.from(ev.dataTransfer?.types ?? []),
+      text: safeReadDT(ev.dataTransfer, "text/plain"),
+    });
+    if (collectionID != null && collectionID !== targetCollectionID && !isAncestorCollection(collectionID, targetCollectionID)) {
+      debugLog("Drop collection on breadcrumb", { from: collectionID, to: targetCollectionID });
+      await moveCollectionToParent(collectionID, targetCollectionID);
+      return;
+    }
+
     const itemIDs = getDraggedItemIDs(ev);
     if (!itemIDs.length) return;
     const sourceID = getPane()?.getSelectedCollection?.()?.id ?? null;
+    debugLog("Drop items on breadcrumb", { items: itemIDs, to: targetCollectionID });
     await moveItemsToCollection(itemIDs, targetCollectionID, sourceID);
   };
 
@@ -827,7 +859,9 @@ function canAcceptBreadcrumbDrop(event: DragEvent | null): boolean {
   if (dt?.types && Array.from(dt.types).some(t => `${t}`.toLowerCase().includes("zotero"))) {
     return true;
   }
-  return getDraggedItemIDs(event).length > 0;
+  if (getDraggedItemIDs(event).length > 0) return true;
+  const colID = getDraggedCollectionID(event);
+  return colID != null;
 }
 
 function setDropEffectMove(ev: DragEvent) {
@@ -948,6 +982,43 @@ function normalizeItemIDs(value: any): number[] {
   return Array.from(unique);
 }
 
+function getDraggedCollectionID(event?: DragEvent | null): number | null {
+  const dt = event?.dataTransfer;
+  const candidateTypes = [
+    COLLECTION_DRAG_MIME,
+    "application/x-zotero-collection-id",
+    "zotero/collection",
+    "text/plain",
+  ];
+  for (const type of candidateTypes) {
+    const id = parseSingleIDFromDT(dt, type);
+    if (id != null) return id;
+  }
+  return null;
+}
+
+function parseSingleIDFromDT(dt: DataTransfer | null | undefined, type: string): number | null {
+  if (!dt) return null;
+  try {
+    const raw = dt.getData(type);
+    if (!raw) return null;
+    const parsed = Number(raw.trim());
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+function safeReadDT(dt: DataTransfer | null | undefined, type: string): string | null {
+  if (!dt) return null;
+  try {
+    const raw = dt.getData(type);
+    return raw || null;
+  } catch (_err) {
+    return null;
+  }
+}
+
 async function moveItemsToCollection(
   itemIDs: number[],
   targetCollectionID: number,
@@ -993,6 +1064,147 @@ async function moveItemsToCollection(
   try {
     deps.scheduleRerender(140);
   } catch (_err) { /* ignored */ }
+}
+
+async function moveCollectionToParent(collectionID: number, newParentID: number) {
+  if (collectionID === newParentID) return;
+  const collection = Zotero.Collections.get(collectionID);
+  if (!collection) return;
+
+  if (isAncestorCollection(collectionID, newParentID)) return;
+
+  const currentParent = collection.parentID ?? null;
+  if (currentParent === newParentID) return;
+
+  debugLog("moveCollectionToParent start", { collectionID, currentParent, newParentID });
+
+  try {
+    const win = Zotero.getMainWindow?.();
+    const mover =
+      (win as any)?.ZoteroPane?.moveCollection ||
+      (ZoteroPane_Local as any)?.moveCollection ||
+      (getPane() as any)?.moveCollection ||
+      null;
+    if (typeof mover === "function") {
+      await Promise.resolve(mover.call((win as any)?.ZoteroPane ?? ZoteroPane_Local ?? getPane(), collectionID, newParentID));
+      refreshCollectionsTree(collectionID);
+      deps.scheduleRerender(200);
+      debugLog("moveCollectionToParent via ZoteroPane_Local.moveCollection", {
+        collectionID,
+        newParentID,
+      });
+      return;
+    }
+  } catch (err) {
+    debugLog("moveCollectionToParent pane helper failed", err);
+  }
+
+  const applyParent = async () => {
+    try {
+      collection.parentID = newParentID;
+      if (typeof (collection as any).setField === "function") {
+        (collection as any).setField("parentID", newParentID);
+      }
+      const parent = Zotero.Collections.get(newParentID);
+      if (parent?.key && typeof (collection as any).setField === "function") {
+        (collection as any).setField("parentKey", parent.key);
+      } else if (parent?.key) {
+        (collection as any).parentKey = parent.key;
+      } else if ((collection as any).setField) {
+        (collection as any).setField("parentKey", null);
+      }
+      updateCollectionParentCaches(collectionID, currentParent, newParentID);
+      if (typeof collection.saveTx === "function") {
+        await collection.saveTx({ skipEditCheck: true } as any);
+      } else if (typeof collection.save === "function") {
+        await collection.save({ skipEditCheck: true } as any);
+      }
+      debugLog("moveCollectionToParent saved", { collectionID, newParentID });
+    } catch (err) {
+      debugLog("moveCollectionToParent error", err);
+    }
+  };
+
+  await applyParent();
+
+  try {
+    refreshCollectionsTree(collectionID);
+    deps.scheduleRerender(200);
+    scrollItemsBodyToTopSoon();
+    debugLog("moveCollectionToParent rerender requested", { collectionID, newParentID });
+  } catch (_err) { /* ignored */ }
+}
+
+function updateCollectionParentCaches(
+  collectionID: number,
+  oldParentID: number | null,
+  newParentID: number | null,
+) {
+  try {
+    if (oldParentID != null) {
+      const oldParent = Zotero.Collections.get(oldParentID);
+      if (oldParent?._childCollections instanceof Set) {
+        oldParent._childCollections.delete(collectionID);
+      }
+    }
+    if (newParentID != null) {
+      const newParent = Zotero.Collections.get(newParentID);
+      if (newParent?._childCollections instanceof Set) {
+        newParent._childCollections.add(collectionID);
+      }
+    }
+    debugLog("updateCollectionParentCaches", { collectionID, oldParentID, newParentID });
+  } catch (_err) { /* ignored */ }
+}
+
+function refreshCollectionsTree(movedCollectionID: number) {
+  const pane = getPane();
+  const cv: any = pane?.collectionsView;
+  try {
+    const win = Zotero.getMainWindow?.();
+    const tree = (win as any)?.document?.getElementById?.("zotero-collections-tree");
+    if (cv?.tree && typeof cv.tree.invalidate === "function") {
+      cv.tree.invalidate();
+    } else if (cv?._treebox && typeof cv._treebox.invalidate === "function") {
+      cv._treebox.invalidate();
+    } else if (cv && typeof cv.invalidate === "function") {
+      cv.invalidate();
+    } else if (tree && typeof (tree as any).invalidate === "function") {
+      (tree as any).invalidate();
+    }
+  } catch (err) {
+    debugLog("refreshCollectionsTree error", err);
+  }
+}
+
+function scrollItemsBodyToTopSoon() {
+  try {
+    const root = getPane()?.itemsView?.domEl as HTMLElement | null;
+    if (!root) return;
+    setTimeout(() => {
+      try {
+        const body =
+          root.querySelector<HTMLElement>('[data-zfe-items-body]') ||
+          root.querySelector<HTMLElement>('[role="rowgroup"].body') ||
+          root.querySelector<HTMLElement>('.virtualized-table-body') ||
+          root.querySelector<HTMLElement>('[role="rowgroup"]');
+        if (body) body.scrollTop = 0;
+      } catch (_err) { /* ignored */ }
+    }, 120);
+  } catch (_err) { /* ignored */ }
+}
+
+function isAncestorCollection(ancestorID: number, candidateChildID: number): boolean {
+  if (ancestorID === candidateChildID) return true;
+  let cursor = Zotero.Collections.get(candidateChildID);
+  const safety = new Set<number>();
+  while (cursor && typeof cursor.parentID === "number" && cursor.parentID) {
+    if (safety.has(cursor.parentID)) break;
+    safety.add(cursor.parentID);
+    if (cursor.parentID === ancestorID) return true;
+    cursor = Zotero.Collections.get(cursor.parentID);
+  }
+  return false;
 }
 
 async function removeItemsFromCollection(ids: number[], sourceCollectionID: number) {

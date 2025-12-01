@@ -13,9 +13,11 @@ const ENABLE_SCROLLTOP_COMPENSATION = true;
 let folderRows: HTMLElement[] = [];
 let currentGridTemplate = "auto";
 let selectedFolderRow: HTMLElement | null = null;
+let draggingFolderRowID: number | null = null;
 let currentCollectionID: number | null = null;
 let draggingFromItemsPane = false;
 let lastDraggedItemIDs: number[] = [];
+let lastDraggedCollectionID: number | null = null;
 let itemsBodyCleanup: (() => void) | null = null;
 let itemsBodyElement: HTMLElement | null = null;
 let itemsKeyboardTarget: HTMLElement | null = null;
@@ -28,6 +30,20 @@ let extraTopOffset = 0;
 let extraTopOffsetMeasureHandle: number | null = null;
 let scrollCompensationState: ScrollCompensationState | null = null;
 const FOLDER_ROW_DROP_HOVER_CLASS = "zfe-folder-row--dragover";
+const COLLECTION_DRAG_MIME = "application/x-zfe-collection-id";
+let forceResetScrollTop = false;
+
+function debugLog(message: string, ...args: any[]) {
+  try {
+    if (typeof Zotero !== "undefined" && typeof Zotero.debug === "function") {
+      Zotero.debug(`[ZFE] ${message} ${args.map(String).join(" ")}`);
+      return;
+    }
+  } catch (_err) { /* ignored */ }
+  try {
+    console.log("[ZFE]", message, ...args);
+  } catch (_err) { /* ignored */ }
+}
 
 /** Exposes which collection ID the injected rows currently represent. */
 export function getLastRenderedCollectionID() {
@@ -190,7 +206,9 @@ export function renderFolderRowsForCurrentCollection() {
   const subcollections = selected
     ? Zotero.Collections.getByParent(selected.id)
     : Zotero.Collections.getByLibrary(libraryID!).filter((c: any) => !c.parentID);
-  const shouldResetScroll = previousCollectionID !== lastRenderedCollectionID;
+  const shouldResetScroll =
+    previousCollectionID !== lastRenderedCollectionID || forceResetScrollTop;
+  forceResetScrollTop = false;
 
   renderFolderRows(subcollections, { resetScroll: shouldResetScroll });
 }
@@ -273,6 +291,7 @@ function buildFolderRow(subCol: any, parentCollectionID: number | null): HTMLEle
   row.setAttribute("role", "row");
   row.className = "zfe-folder-row row";
   row.tabIndex = 0;
+  row.draggable = true;
 
   row.style.cssText = `
     display: grid;
@@ -323,6 +342,7 @@ function buildFolderRow(subCol: any, parentCollectionID: number | null): HTMLEle
   });
 
   wireFolderRowDragAndDrop(row, subCol.id, parentCollectionID);
+  wireFolderRowDragSource(row, subCol.id);
 
   const columnCount = getCurrentColumnCount();
   for (let i = 0; i < columnCount; i++) {
@@ -359,7 +379,7 @@ function wireFolderRowDragAndDrop(
   if (typeof targetCollectionID !== "number") return;
 
   const handleEnter = (event: DragEvent) => {
-    if (!canAcceptItemDrag(event)) return;
+    if (!canAcceptItemDrag(event) && !canAcceptCollectionDrag(event, targetCollectionID)) return;
     event.preventDefault();
     event.stopPropagation();
     setDropEffectMove(event);
@@ -367,7 +387,7 @@ function wireFolderRowDragAndDrop(
   };
 
   const handleOver = (event: DragEvent) => {
-    if (!canAcceptItemDrag(event)) return;
+    if (!canAcceptItemDrag(event) && !canAcceptCollectionDrag(event, targetCollectionID)) return;
     event.preventDefault();
     event.stopPropagation();
     setDropEffectMove(event);
@@ -379,21 +399,56 @@ function wireFolderRowDragAndDrop(
   };
 
   const handleDrop = async (event: DragEvent) => {
-    if (!canAcceptItemDrag(event)) return;
+    const droppingCollectionID = getDraggedCollectionID(event);
+    const droppingItems = canAcceptItemDrag(event);
+    const allowCollection = canAcceptCollectionDrag(event, targetCollectionID);
+    if (!droppingItems && !allowCollection) return;
     event.preventDefault();
     event.stopPropagation();
     clearFolderRowDropStates();
-    const itemIDs = getDraggedItemIDs(event);
-    if (!itemIDs.length) return;
-    try {
-      await moveItemsToCollection(itemIDs, targetCollectionID, sourceCollectionID);
-    } catch (_err) { /* ignored */ }
+    if (allowCollection && droppingCollectionID != null) {
+      debugLog("Drop collection on folder row", { from: droppingCollectionID, to: targetCollectionID });
+      await moveCollectionToParent(droppingCollectionID, targetCollectionID);
+      return;
+    }
+    if (droppingItems) {
+      const itemIDs = getDraggedItemIDs(event);
+      if (!itemIDs.length) return;
+      try {
+        debugLog("Drop items on folder row", { items: itemIDs, to: targetCollectionID });
+        await moveItemsToCollection(itemIDs, targetCollectionID, sourceCollectionID);
+      } catch (_err) { /* ignored */ }
+    }
   };
 
   row.addEventListener("dragenter", handleEnter);
   row.addEventListener("dragover", handleOver);
   row.addEventListener("dragleave", handleLeave);
   row.addEventListener("drop", handleDrop);
+}
+
+function wireFolderRowDragSource(row: HTMLElement, collectionID: number) {
+  const handleDragStart = (event: DragEvent) => {
+    draggingFolderRowID = collectionID;
+    lastDraggedCollectionID = collectionID;
+    clearFolderRowDropStates();
+    try {
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData(COLLECTION_DRAG_MIME, `${collectionID}`);
+        event.dataTransfer.setData("text/plain", `${collectionID}`);
+      }
+    } catch (_err) { /* ignored */ }
+  };
+
+  const handleDragEnd = () => {
+    draggingFolderRowID = null;
+    lastDraggedCollectionID = null;
+    clearFolderRowDropStates();
+  };
+
+  row.addEventListener("dragstart", handleDragStart);
+  row.addEventListener("dragend", handleDragEnd);
 }
 
 function clearFolderRowDropStates() {
@@ -422,11 +477,47 @@ function canAcceptItemDrag(event: DragEvent | null): boolean {
   return false;
 }
 
+function canAcceptCollectionDrag(event: DragEvent | null, targetCollectionID: number): boolean {
+  const draggedID = getDraggedCollectionID(event);
+  if (draggedID == null) return false;
+  if (draggedID === targetCollectionID) return false;
+  if (isAncestorCollection(draggedID, targetCollectionID)) return false;
+  return true;
+}
+
 function getDraggedItemIDs(event?: DragEvent | null): number[] {
   const fromTransfer = extractItemIDsFromDataTransfer(event?.dataTransfer ?? null);
   if (fromTransfer.length) return fromTransfer;
   if (lastDraggedItemIDs.length) return [...lastDraggedItemIDs];
   return getSelectedItemIDs();
+}
+
+function getDraggedCollectionID(event?: DragEvent | null): number | null {
+  const dt = event?.dataTransfer;
+  const candidateTypes = [
+    COLLECTION_DRAG_MIME,
+    "application/x-zotero-collection-id",
+    "zotero/collection",
+    "text/plain",
+  ];
+  for (const type of candidateTypes) {
+    const id = parseSingleIDFromDT(dt, type);
+    if (id != null) return id;
+  }
+  if (lastDraggedCollectionID != null) return lastDraggedCollectionID;
+  return null;
+}
+
+function parseSingleIDFromDT(dt: DataTransfer | null | undefined, type: string): number | null {
+  if (!dt) return null;
+  try {
+    const raw = dt.getData(type);
+    if (!raw) return null;
+    const parsed = Number(raw.trim());
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch (_err) {
+    return null;
+  }
 }
 
 function extractItemIDsFromDataTransfer(dt: DataTransfer | null): number[] {
@@ -594,6 +685,138 @@ async function moveItemsToCollection(
   try {
     rerenderTrigger(140);
   } catch (_err) { /* ignored */ }
+}
+
+async function moveCollectionToParent(collectionID: number, newParentID: number) {
+  if (collectionID === newParentID) return;
+  const collection = Zotero.Collections.get(collectionID);
+  if (!collection) return;
+
+  // Prevent cycles: do not move a collection into its own descendant.
+  if (isAncestorCollection(collectionID, newParentID)) return;
+
+  const currentParent = collection.parentID ?? null;
+  if (currentParent === newParentID) return;
+
+  debugLog("moveCollectionToParent start", { collectionID, currentParent, newParentID });
+
+  // Try Zotero's own move helper if available (handles UI + caches)
+  try {
+    const win = Zotero.getMainWindow?.();
+    const mover =
+      (win as any)?.ZoteroPane?.moveCollection ||
+      (ZoteroPane_Local as any)?.moveCollection ||
+      (getPane() as any)?.moveCollection ||
+      null;
+    if (typeof mover === "function") {
+      await Promise.resolve(mover.call((win as any)?.ZoteroPane ?? ZoteroPane_Local ?? getPane(), collectionID, newParentID));
+      refreshCollectionsTree(collectionID);
+      rerenderTrigger(200);
+      debugLog("moveCollectionToParent via ZoteroPane_Local.moveCollection", {
+        collectionID,
+        newParentID,
+      });
+      return;
+    }
+  } catch (err) {
+    debugLog("moveCollectionToParent pane helper failed", err);
+  }
+
+  const applyParent = async () => {
+    try {
+      collection.parentID = newParentID;
+      if (typeof (collection as any).setField === "function") {
+        (collection as any).setField("parentID", newParentID);
+      }
+      const parent = Zotero.Collections.get(newParentID);
+      if (parent?.key && typeof (collection as any).setField === "function") {
+        (collection as any).setField("parentKey", parent.key);
+      } else if (parent?.key) {
+        (collection as any).parentKey = parent.key;
+      } else if ((collection as any).setField) {
+        (collection as any).setField("parentKey", null);
+      }
+      updateCollectionParentCaches(collectionID, currentParent, newParentID);
+      if (typeof collection.saveTx === "function") {
+        await collection.saveTx({ skipEditCheck: true } as any);
+      } else if (typeof collection.save === "function") {
+        await collection.save({ skipEditCheck: true } as any);
+      }
+      debugLog("moveCollectionToParent saved", { collectionID, newParentID });
+    } catch (err) {
+      debugLog("moveCollectionToParent error", err);
+    }
+  };
+
+  await applyParent();
+
+  try {
+    refreshCollectionsTree(collectionID);
+    forceResetScrollTop = true;
+    rerenderTrigger(200);
+    debugLog("moveCollectionToParent rerender requested", { collectionID, newParentID });
+  } catch (_err) { /* ignored */ }
+}
+
+function refreshCollectionsTree(movedCollectionID: number) {
+  const pane = getPane();
+  const cv: any = pane?.collectionsView;
+  try {
+    const win = Zotero.getMainWindow?.();
+    const tree = (win as any)?.document?.getElementById?.("zotero-collections-tree");
+    if (cv?.tree && typeof cv.tree.invalidate === "function") {
+      cv.tree.invalidate();
+    } else if (cv?._treebox && typeof cv._treebox.invalidate === "function") {
+      cv._treebox.invalidate();
+    } else if (cv && typeof cv.invalidate === "function") {
+      cv.invalidate();
+    } else if (tree && typeof (tree as any).invalidate === "function") {
+      (tree as any).invalidate();
+    }
+  } catch (err) {
+    debugLog("refreshCollectionsTree error", err);
+  }
+}
+
+function updateCollectionParentCaches(
+  collectionID: number,
+  oldParentID: number | null,
+  newParentID: number | null,
+) {
+  try {
+    if (oldParentID != null) {
+      const oldParent = Zotero.Collections.get(oldParentID);
+      if (oldParent?._childCollections instanceof Set) {
+        oldParent._childCollections.delete(collectionID);
+      }
+    }
+    if (newParentID != null) {
+      const newParent = Zotero.Collections.get(newParentID);
+      if (newParent?._childCollections instanceof Set) {
+        newParent._childCollections.add(collectionID);
+      }
+    }
+    debugLog("updateCollectionParentCaches", { collectionID, oldParentID, newParentID });
+  } catch (_err) { /* ignored */ }
+}
+
+function isAncestorCollection(ancestorID: number, candidateChildID: number): boolean {
+  if (ancestorID === candidateChildID) return true;
+  let cursor = Zotero.Collections.get(candidateChildID);
+  const safety = new Set<number>();
+  while (cursor && typeof cursor.parentID === "number" && cursor.parentID) {
+    if (safety.has(cursor.parentID)) break;
+    safety.add(cursor.parentID);
+    if (cursor.parentID === ancestorID) return true;
+    cursor = Zotero.Collections.get(cursor.parentID);
+  }
+  return false;
+}
+
+function snapItemsBodyToTop() {
+  if (itemsBodyElement) {
+    scrollBodyToTop(itemsBodyElement);
+  }
 }
 
 async function removeItemsFromCollection(ids: number[], sourceCollectionID: number) {
@@ -1415,6 +1638,8 @@ export function removeFolderRows() {
   currentCollectionID = null;
   draggingFromItemsPane = false;
   lastDraggedItemIDs = [];
+  draggingFolderRowID = null;
+  lastDraggedCollectionID = null;
   clearFolderRowDropStates();
   detachItemsBodyListeners();
   detachFolderRowsResizeObserver();
