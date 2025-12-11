@@ -29,9 +29,14 @@ let windowResizeCleanup: (() => void) | null = null;
 let extraTopOffset = 0;
 let extraTopOffsetMeasureHandle: number | null = null;
 let scrollCompensationState: ScrollCompensationState | null = null;
+let columnDescriptors: ColumnDescriptor[] = [];
 const FOLDER_ROW_DROP_HOVER_CLASS = "zfe-folder-row--dragover";
 const COLLECTION_DRAG_MIME = "application/x-zfe-collection-id";
 let forceResetScrollTop = false;
+
+type ColumnDescriptor = {
+  className: string;
+};
 
 /** Exposes which collection ID the injected rows currently represent. */
 export function getLastRenderedCollectionID() {
@@ -223,6 +228,7 @@ function renderFolderRows(subcollections: any[], options?: { resetScroll?: boole
     '[role="row"][data-header], [role="row"][aria-rowindex="1"], .virtualized-table-header'
   );
   const headerCells = headerRow ? getHeaderCellsFrom(headerRow) : [];
+  columnDescriptors = deriveColumnDescriptors(headerCells);
 
   const body = findItemsBody(root);
   if (!body) {
@@ -242,7 +248,7 @@ function renderFolderRows(subcollections: any[], options?: { resetScroll?: boole
   const fragment = doc.createDocumentFragment();
   const createdRows: HTMLElement[] = [];
   for (const sub of subcollections) {
-    const row = buildFolderRow(sub, currentCollectionID);
+    const row = buildFolderRow(sub, currentCollectionID, columnDescriptors);
     createdRows.push(row);
     fragment.appendChild(row);
   }
@@ -273,25 +279,22 @@ function renderFolderRows(subcollections: any[], options?: { resetScroll?: boole
 }
 
 /** One folder-like row aligned to columns; opens on click/Enter/Space */
-function buildFolderRow(subCol: any, parentCollectionID: number | null): HTMLElement {
+function buildFolderRow(
+  subCol: any,
+  parentCollectionID: number | null,
+  columns: ColumnDescriptor[],
+): HTMLElement {
   const doc = getDocument();
   const row = doc.createElement("div");
-  row.setAttribute("role", "row");
+  row.setAttribute("role", "treeitem");
+  row.setAttribute("aria-level", "1");
+  row.setAttribute("aria-expanded", "false");
   row.className = "zfe-folder-row row";
   row.tabIndex = 0;
   row.draggable = true;
 
-  row.style.cssText = `
-    display: grid;
-    align-items: center;
-    min-height: 28px;
-    padding: 0 6px;
-    font-size: 12.5px;
-    user-select: none;
-    cursor: default;
-    border-radius: 4px;
-  `;
-  row.style.gridTemplateColumns = currentGridTemplate || "auto";
+  row.style.minHeight = `${getNativeRowHeight() ?? 28}px`;
+  row.style.userSelect = "none";
   row.dataset.collectionId = `${subCol.id ?? ""}`;
   if (parentCollectionID != null) {
     row.dataset.parentCollectionId = `${parentCollectionID}`;
@@ -332,23 +335,34 @@ function buildFolderRow(subCol: any, parentCollectionID: number | null): HTMLEle
   wireFolderRowDragAndDrop(row, subCol.id, parentCollectionID);
   wireFolderRowDragSource(row, subCol.id);
 
-  const columnCount = getCurrentColumnCount();
+  const columnCount = Math.max(columns.length, getCurrentColumnCount());
   for (let i = 0; i < columnCount; i++) {
-    const cell = doc.createElement("div");
-    cell.setAttribute("role", "gridcell");
-    cell.style.cssText =
-      "display:flex;align-items:center;gap:6px;padding:2px 4px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:inherit;";
+    const descriptor = columns[i] || getDefaultColumnDescriptor(i);
+    const cell = doc.createElement("span");
+    cell.className = descriptor.className;
 
     if (i === 0) {
+      const indent = doc.createElement("span");
+      indent.className = "cell-indent";
+      indent.style.paddingInlineStart = "0px";
+
+      const twisty = doc.createElement("span");
+      twisty.className = "icon icon-css icon-twisty twisty";
+      twisty.setAttribute("aria-hidden", "true");
+      twisty.style.pointerEvents = "none";
+      twisty.style.visibility = "hidden";
+
       const icon = doc.createElement("span");
+      icon.className = "icon icon-css cell-icon";
       icon.textContent = "\u{1F4C1}";
       icon.setAttribute("aria-hidden", "true");
 
       const name = doc.createElement("span");
+      name.className = "cell-text";
       name.textContent = subCol.name;
-      name.style.fontWeight = "600";
+      name.setAttribute("dir", "auto");
 
-      cell.append(icon, name);
+      cell.append(indent, twisty, icon, name);
     } else {
       cell.textContent = "";
     }
@@ -831,6 +845,63 @@ function getHeaderCellsFrom(headerRow: HTMLElement): HTMLElement[] {
   return Array.from(candidates);
 }
 
+function deriveColumnDescriptors(headerCells: HTMLElement[]): ColumnDescriptor[] {
+  const fromNative = getFirstNativeRow();
+  if (fromNative) {
+    const nativeCells = Array.from(fromNative.children).filter(
+      (node): node is HTMLElement => node instanceof HTMLElement,
+    );
+    if (nativeCells.length) {
+      return normalizeColumnDescriptors(nativeCells.map((cell) => cell.className));
+    }
+  }
+
+  if (headerCells.length) {
+    const headerBased = headerCells.map((cell) => classNameFromHeader(cell));
+    return normalizeColumnDescriptors(headerBased);
+  }
+
+  return normalizeColumnDescriptors([]);
+}
+
+function classNameFromHeader(cell: HTMLElement): string {
+  const filtered = Array.from(cell.classList).filter(
+    (cls): cls is string =>
+      !!cls &&
+      cls !== "column-header-cell" &&
+      cls !== "virtualized-table-header-cell" &&
+      !cls.startsWith("column-header"),
+  );
+  const base = filtered.join(" ").trim();
+  return base ? `cell ${base}` : "cell";
+}
+
+function normalizeColumnDescriptors(classNames: string[]): ColumnDescriptor[] {
+  const count = Math.max(classNames.length, getCurrentColumnCount(), 1);
+  const result: ColumnDescriptor[] = [];
+  for (let i = 0; i < count; i++) {
+    const raw = classNames[i] ?? "";
+    result.push({ className: sanitizeCellClass(raw, i === 0) });
+  }
+  return result;
+}
+
+function sanitizeCellClass(raw: string, isFirst: boolean): string {
+  const trimmed = raw.trim();
+  const hasCell = /\bcell\b/.test(trimmed);
+  let className = hasCell ? trimmed : `cell ${trimmed}`.trim();
+  if (isFirst && !/\bfirst-column\b/.test(className)) {
+    className = `${className} first-column`.trim();
+  }
+  return className || (isFirst ? "cell title primary first-column" : "cell");
+}
+
+function getDefaultColumnDescriptor(index: number): ColumnDescriptor {
+  return {
+    className: sanitizeCellClass(index === 0 ? "cell title primary first-column" : "cell", index === 0),
+  };
+}
+
 function getCurrentColumnCount(): number {
   const pane = getPane();
   const root = pane?.itemsView?.domEl as HTMLElement;
@@ -913,6 +984,13 @@ function getFolderRowsContainer(): HTMLElement | null {
   const first = folderRows[0];
   if (!first) return null;
   return first.parentElement as HTMLElement | null;
+}
+
+function getNativeRowHeight(): number | null {
+  const nativeRow = getFirstNativeRow();
+  if (!nativeRow) return null;
+  const rect = nativeRow.getBoundingClientRect();
+  return Math.round(rect.height) || null;
 }
 
 function attachFolderRowsResizeObserver(container: HTMLElement | null) {
